@@ -111,15 +111,25 @@ type MlAttrPayload = {
 };
 
 async function discoverCategory(accessToken: string, title: string) {
-  const t = title.toLowerCase();
-  const isSunglasses =
-    (t.includes("oculos") || t.includes("óculos")) && t.includes("sol");
+  const t = title.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");
+  const isSunglasses = t.includes("oculos") && t.includes("sol");
 
-  // Better search query improves category match (e.g. avoid "ciclismo")
-  const query = isSunglasses
-    ? `óculos de sol ${guessBrand(title)}`.trim()
-    : title;
+  // Hard preference for sunglasses — avoids cycling glasses category MLB48191
+  if (isSunglasses) {
+    return {
+      category_id: "MLB8378",
+      category_name: "De Sol",
+      domain_id: "MLB-SUNGLASSES",
+      domain_name: "Óculos de sol",
+      attributes: [] as Array<{
+        id: string;
+        value_id?: string;
+        value_name?: string;
+      }>,
+    };
+  }
 
+  const query = title;
   const url = new URL(`${ML_API}/sites/MLB/domain_discovery/search`);
   url.searchParams.set("limit", "8");
   url.searchParams.set("q", query);
@@ -156,10 +166,7 @@ async function discoverCategory(accessToken: string, title: string) {
     let score = 100 - index;
     if (item.domain_id === "MLB-SUNGLASSES") score += 100;
     if (item.category_id === "MLB8378") score += 80;
-    if (isSunglasses && name.includes("sol") && !name.includes("ciclismo"))
-      score += 60;
-    if (isSunglasses && name.includes("ciclismo")) score -= 80;
-    if (t.includes("ciclismo") && name.includes("ciclismo")) score += 50;
+    if (name.includes("ciclismo")) score -= 80;
     return { item, score };
   });
 
@@ -213,7 +220,12 @@ function buildRequiredAttributes(
   suggested?: Array<{ id: string; value_id?: string; value_name?: string }>,
 ): MlAttrPayload[] {
   const out: MlAttrPayload[] = [];
+  const byId = new Map(attrs.map((a) => [a.id, a]));
   const suggestedMap = new Map((suggested ?? []).map((s) => [s.id, s]));
+
+  const push = (attr: MlAttrPayload) => {
+    if (!out.some((a) => a.id === attr.id)) out.push(attr);
+  };
 
   const required = attrs.filter(
     (a) => a.tags?.required || a.tags?.catalog_required,
@@ -222,7 +234,7 @@ function buildRequiredAttributes(
   for (const attr of required) {
     const fromDiscovery = suggestedMap.get(attr.id);
     if (fromDiscovery?.value_name || fromDiscovery?.value_id) {
-      out.push({
+      push({
         id: attr.id,
         ...(fromDiscovery.value_id ? { value_id: fromDiscovery.value_id } : {}),
         ...(fromDiscovery.value_name
@@ -233,42 +245,98 @@ function buildRequiredAttributes(
     }
 
     if (attr.id === "BRAND") {
-      out.push({ id: "BRAND", value_name: guessBrand(title) });
+      const brandName = guessBrand(title);
+      const match = attr.values?.find(
+        (v) => v.name.toLowerCase() === brandName.toLowerCase(),
+      );
+      if (match) push({ id: "BRAND", value_id: match.id, value_name: match.name });
+      else if (attr.values?.length) {
+        // catalog brands require an id from the list
+        const v = attr.values[0];
+        push({ id: "BRAND", value_id: v.id, value_name: v.name });
+      } else {
+        push({ id: "BRAND", value_name: brandName });
+      }
       continue;
     }
     if (attr.id === "MODEL") {
-      out.push({ id: "MODEL", value_name: title.slice(0, 40) });
+      push({ id: "MODEL", value_name: title.slice(0, 40) || "Modelo padrão" });
+      continue;
+    }
+    if (attr.id === "GENDER" && attr.values?.length) {
+      const uni =
+        attr.values.find((v) => /sem g[eê]nero/i.test(v.name)) ?? attr.values[0];
+      push({ id: "GENDER", value_id: uni.id, value_name: uni.name });
       continue;
     }
     if (attr.id === "GTIN" || attr.id === "EAN" || attr.id === "UPC") {
-      continue;
+      continue; // handled via EMPTY_GTIN_REASON below
     }
     if (attr.id === "ITEM_CONDITION") {
       const neu = attr.values?.find((v) => /novo|new/i.test(v.name));
-      if (neu) out.push({ id: attr.id, value_id: neu.id, value_name: neu.name });
+      if (neu) push({ id: attr.id, value_id: neu.id, value_name: neu.name });
       continue;
     }
-    // Prefer enumerated values only — avoid inventing free-text that ML rejects
     if (attr.values?.length) {
       const v = attr.values[0];
-      out.push({ id: attr.id, value_id: v.id, value_name: v.name });
+      push({ id: attr.id, value_id: v.id, value_name: v.name });
       continue;
     }
     if (attr.value_type === "number_unit" && attr.allowed_units?.length) {
-      out.push({
+      push({
         id: attr.id,
         value_name: `1 ${attr.allowed_units[0].id}`,
       });
     }
   }
 
-  if (!out.some((a) => a.id === "BRAND")) {
-    const brand = suggestedMap.get("BRAND");
-    out.push({
-      id: "BRAND",
-      value_id: brand?.value_id,
-      value_name: brand?.value_name ?? guessBrand(title),
+  // GTIN: prefer empty reason over inventing a barcode
+  const emptyGtin = byId.get("EMPTY_GTIN_REASON");
+  if (emptyGtin?.values?.length) {
+    const reason =
+      emptyGtin.values.find((v) =>
+        /n[aã]o tem c[oó]digo cadastrado/i.test(v.name),
+      ) ?? emptyGtin.values[0];
+    push({
+      id: "EMPTY_GTIN_REASON",
+      value_id: reason.id,
+      value_name: reason.name,
     });
+  } else if (byId.get("GTIN")) {
+    // fallback test EAN-13 (valid checksum) for categories that force GTIN
+    push({ id: "GTIN", value_name: "7891234567895" });
+  }
+
+  // Package dimensions required by many MLB categories
+  const pkgDefaults: Record<string, string> = {
+    SELLER_PACKAGE_HEIGHT: "10 cm",
+    SELLER_PACKAGE_WIDTH: "15 cm",
+    SELLER_PACKAGE_LENGTH: "20 cm",
+    SELLER_PACKAGE_WEIGHT: "200 g",
+  };
+  for (const [id, value] of Object.entries(pkgDefaults)) {
+    if (byId.has(id)) push({ id, value_name: value });
+  }
+
+  if (!out.some((a) => a.id === "BRAND")) {
+    const brandAttr = byId.get("BRAND");
+    const brand = suggestedMap.get("BRAND");
+    if (brand?.value_id || brand?.value_name) {
+      push({
+        id: "BRAND",
+        value_id: brand.value_id,
+        value_name: brand.value_name,
+      });
+    } else if (brandAttr?.values?.length) {
+      const v = brandAttr.values[0];
+      push({ id: "BRAND", value_id: v.id, value_name: v.name });
+    } else {
+      push({ id: "BRAND", value_name: guessBrand(title) });
+    }
+  }
+
+  if (!out.some((a) => a.id === "MODEL")) {
+    push({ id: "MODEL", value_name: title.slice(0, 40) || "Modelo padrão" });
   }
 
   return out;
