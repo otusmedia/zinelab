@@ -35,6 +35,19 @@ export default async function IntegrationsPage({
 
       <div className="panel" style={{ marginTop: 16 }}>
         <h2 style={{ marginTop: 0 }}>Mercado Livre</h2>
+        {!process.env.ML_APP_ID || !process.env.ML_CLIENT_SECRET ? (
+          <p className="muted">
+            Status: credenciais do app ML não configuradas no servidor. Crie o
+            app em developers.mercadolivre.com.br e adicione{" "}
+            <code>ML_APP_ID</code> + <code>ML_CLIENT_SECRET</code> na Vercel.
+            Redirect URI:{" "}
+            <code>
+              https://zine-lab.vercel.app/api/integrations/mercado-livre/callback
+            </code>
+          </p>
+        ) : (
+          <p className="muted">Status: app ML configurado — pode conectar.</p>
+        )}
         <form action={startMercadoLivreOAuth}>
           <button type="submit" className="primary">
             Conectar Mercado Livre

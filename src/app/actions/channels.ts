@@ -10,13 +10,17 @@ import {
 } from "@/lib/ml/client";
 
 export async function startMercadoLivreOAuth(_formData?: FormData) {
-  const { organization } = await requireOrganization();
+  await requireOrganization();
 
-  if (!process.env.ML_APP_ID) {
-    throw new Error(
-      "ML_APP_ID não configurado. Defina as variáveis no .env para conectar.",
+  if (!process.env.ML_APP_ID || !process.env.ML_CLIENT_SECRET) {
+    redirect(
+      `/integrations?error=${encodeURIComponent(
+        "Mercado Livre ainda não configurado. Defina ML_APP_ID e ML_CLIENT_SECRET na Vercel (e o redirect URI no app do ML).",
+      )}`,
     );
   }
+
+  const { organization } = await requireOrganization();
 
   const state = Buffer.from(
     JSON.stringify({
