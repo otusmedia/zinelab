@@ -9,8 +9,8 @@ import {
   ML_PKCE_COOKIE,
   buildMercadoLivreAuthUrl,
   createPkcePair,
+  pauseMercadoLivreItem,
   publishMercadoLivreItem,
-  updateMercadoLivreListingType,
 } from "@/lib/ml/client";
 
 export async function startMercadoLivreOAuth(_formData?: FormData) {
@@ -234,19 +234,42 @@ export async function processSyncJob(jobId: string) {
             ? "gold_pro"
             : "gold_special";
 
+      // ML does not allow changing listing_type_id on an existing item.
+      const previousType =
+        (listing.metadata as { listing_type_id?: string } | null)
+          ?.listing_type_id === "gold_pro"
+          ? "gold_pro"
+          : (listing.metadata as { listing_type_id?: string } | null)
+                ?.listing_type_id === "gold_special"
+            ? "gold_special"
+            : listing.external_id
+              ? "gold_special"
+              : null;
+
+      const previousExternalId = listing.external_id as string | null;
+      const typeChanged =
+        Boolean(previousExternalId) &&
+        previousType !== null &&
+        previousType !== listingTypeId;
+
       let result: {
         id?: string;
         permalink?: string;
         category_id?: string;
       };
+      let pausedPrevious: string | null = null;
 
-      if (listing.external_id) {
-        result = await updateMercadoLivreListingType({
-          accessToken: secret.access_token,
-          itemId: listing.external_id,
-          listingTypeId,
-        });
-      } else {
+      if (!previousExternalId || typeChanged) {
+        if (typeChanged && previousExternalId) {
+          const paused = await pauseMercadoLivreItem({
+            accessToken: secret.access_token,
+            itemId: previousExternalId,
+          });
+          pausedPrevious = paused.ok
+            ? previousExternalId
+            : `${previousExternalId} (pause falhou: ${paused.error})`;
+        }
+
         result = await publishMercadoLivreItem({
           accessToken: secret.access_token,
           title,
@@ -256,13 +279,24 @@ export async function processSyncJob(jobId: string) {
           pictureUrls,
           listingTypeId,
         });
+      } else {
+        // Same type + already published: keep MLB id (type is not editable).
+        result = {
+          id: previousExternalId,
+          permalink:
+            (listing.metadata as { permalink?: string } | null)?.permalink ??
+            undefined,
+          category_id:
+            (listing.metadata as { category_id?: string } | null)?.category_id ??
+            undefined,
+        };
       }
 
       await admin
         .from("channel_listings")
         .update({
           status: "published",
-          external_id: result.id ?? listing.external_id ?? null,
+          external_id: result.id ?? previousExternalId,
           last_sync_at: new Date().toISOString(),
           last_error: null,
           metadata: {
@@ -272,6 +306,12 @@ export async function processSyncJob(jobId: string) {
             category_id: result.category_id ?? null,
             permalink: result.permalink ?? null,
             listing_type_id: listingTypeId,
+            ...(typeChanged
+              ? {
+                  previous_external_id: previousExternalId,
+                  previous_paused: pausedPrevious,
+                }
+              : {}),
           },
           updated_at: new Date().toISOString(),
         })

@@ -504,10 +504,10 @@ export async function publishMercadoLivreItem(params: {
   return { ...json, category_id: categoryId };
 }
 
-export async function updateMercadoLivreListingType(params: {
+/** Pause an existing item (used when recreating with a different listing type). */
+export async function pauseMercadoLivreItem(params: {
   accessToken: string;
   itemId: string;
-  listingTypeId: "gold_special" | "gold_pro";
 }) {
   const res = await fetch(`${ML_API}/items/${params.itemId}`, {
     method: "PUT",
@@ -516,17 +516,12 @@ export async function updateMercadoLivreListingType(params: {
       "Content-Type": "application/json",
       Accept: "application/json",
     },
-    body: JSON.stringify({ listing_type_id: params.listingTypeId }),
+    body: JSON.stringify({ status: "paused" }),
   });
-  const text = await res.text();
   if (!res.ok) {
-    throw new Error(
-      `ML update tipo (${params.itemId}): ${formatMlError(res.status, text)}`,
-    );
+    const text = await res.text();
+    // Non-fatal: old ad may remain active if pause fails
+    return { ok: false as const, error: formatMlError(res.status, text) };
   }
-  try {
-    return JSON.parse(text) as { id?: string; permalink?: string };
-  } catch {
-    return { id: params.itemId };
-  }
+  return { ok: true as const };
 }

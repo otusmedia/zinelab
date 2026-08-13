@@ -137,6 +137,10 @@ export default async function ProductDetailPage({
               <option value="gold_special">Clássico</option>
               <option value="gold_pro">Premium</option>
             </select>
+            <p className="muted" style={{ marginTop: 6 }}>
+              O ML não altera o tipo de um anúncio já publicado. Trocar
+              Clássico/Premium cria um anúncio novo e pausa o anterior.
+            </p>
           </div>
           <button type="submit" className="primary">
             Publicar no Mercado Livre
