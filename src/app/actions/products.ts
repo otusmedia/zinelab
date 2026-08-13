@@ -3,7 +3,18 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { queueStockSyncForVariant } from "@/app/actions/channels";
+import { createServiceClient } from "@/lib/supabase/admin";
 import { requireOrganization } from "@/lib/tenancy";
+
+const IMAGE_BUCKET = "product-images";
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const ALLOWED_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+]);
 
 export async function createProductAction(formData: FormData) {
   const { supabase, organization, store } = await requireOrganization();
@@ -132,4 +143,125 @@ export async function updateInventoryAction(formData: FormData) {
 
   revalidatePath("/inventory");
   revalidatePath("/channels");
+}
+
+export async function uploadProductImageAction(formData: FormData) {
+  const { supabase, organization } = await requireOrganization();
+  const productId = String(formData.get("product_id") ?? "");
+  const file = formData.get("file");
+
+  const fail = (message: string) => {
+    redirect(`/products/${productId}?error=${encodeURIComponent(message)}`);
+  };
+
+  if (!productId) fail("Produto inválido");
+  if (!(file instanceof File) || file.size === 0) {
+    fail("Selecione uma imagem");
+  }
+
+  const image = file as File;
+  if (!ALLOWED_TYPES.has(image.type)) {
+    fail("Use JPG, PNG, WEBP ou GIF");
+  }
+  if (image.size > MAX_IMAGE_BYTES) {
+    fail("Imagem maior que 5MB");
+  }
+
+  const { data: product } = await supabase
+    .from("products")
+    .select("id")
+    .eq("id", productId)
+    .eq("organization_id", organization.id)
+    .maybeSingle();
+
+  if (!product) fail("Produto não encontrado");
+
+  const { count } = await supabase
+    .from("product_images")
+    .select("id", { count: "exact", head: true })
+    .eq("product_id", productId);
+
+  const ext =
+    image.type === "image/png"
+      ? "png"
+      : image.type === "image/webp"
+        ? "webp"
+        : image.type === "image/gif"
+          ? "gif"
+          : "jpg";
+  const objectPath = `${organization.id}/${productId}/${crypto.randomUUID()}.${ext}`;
+
+  const admin = createServiceClient();
+  const bytes = Buffer.from(await image.arrayBuffer());
+  const { error: uploadError } = await admin.storage
+    .from(IMAGE_BUCKET)
+    .upload(objectPath, bytes, {
+      contentType: image.type,
+      upsert: false,
+    });
+
+  if (uploadError) {
+    fail(
+      `Upload falhou: ${uploadError.message}. Aplique a migration do bucket product-images no Supabase.`,
+    );
+  }
+
+  const { data: publicData } = admin.storage
+    .from(IMAGE_BUCKET)
+    .getPublicUrl(objectPath);
+  const publicUrl = publicData.publicUrl;
+
+  const { error: insertError } = await supabase.from("product_images").insert({
+    organization_id: organization.id,
+    product_id: productId,
+    storage_path: publicUrl,
+    position: count ?? 0,
+    alt: image.name.slice(0, 120) || null,
+  });
+
+  if (insertError) {
+    await admin.storage.from(IMAGE_BUCKET).remove([objectPath]);
+    fail(insertError.message);
+  }
+
+  revalidatePath(`/products/${productId}`);
+  redirect(`/products/${productId}?image=1`);
+}
+
+export async function deleteProductImageAction(formData: FormData) {
+  const { supabase, organization } = await requireOrganization();
+  const productId = String(formData.get("product_id") ?? "");
+  const imageId = String(formData.get("image_id") ?? "");
+
+  const { data: image } = await supabase
+    .from("product_images")
+    .select("*")
+    .eq("id", imageId)
+    .eq("organization_id", organization.id)
+    .eq("product_id", productId)
+    .maybeSingle();
+
+  if (!image) {
+    redirect(`/products/${productId}?error=${encodeURIComponent("Imagem não encontrada")}`);
+  }
+
+  const admin = createServiceClient();
+  const path = image.storage_path as string;
+  // Public URL → extract object path after /product-images/
+  const marker = `/${IMAGE_BUCKET}/`;
+  const idx = path.indexOf(marker);
+  if (idx >= 0) {
+    const objectPath = decodeURIComponent(path.slice(idx + marker.length));
+    await admin.storage.from(IMAGE_BUCKET).remove([objectPath]);
+  } else if (!path.startsWith("http")) {
+    const objectPath = path.startsWith(`${IMAGE_BUCKET}/`)
+      ? path.slice(IMAGE_BUCKET.length + 1)
+      : path;
+    await admin.storage.from(IMAGE_BUCKET).remove([objectPath]);
+  }
+
+  await supabase.from("product_images").delete().eq("id", imageId);
+
+  revalidatePath(`/products/${productId}`);
+  redirect(`/products/${productId}`);
 }
