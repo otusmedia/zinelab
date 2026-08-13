@@ -106,7 +106,6 @@ export async function GET(request: NextRequest) {
       throw new Error(connError?.message ?? "Falha ao salvar connection");
     }
 
-    // Tokens ONLY via service role into secrets table — never returned to client.
     const expiresAt = token.expires_in
       ? new Date(Date.now() + token.expires_in * 1000).toISOString()
       : null;
@@ -127,6 +126,17 @@ export async function GET(request: NextRequest) {
     if (secretError) {
       throw new Error(secretError.message);
     }
+
+    await admin
+      .from("channel_connections")
+      .update({
+        metadata: {
+          nickname: me.nickname ?? null,
+          token_expires_at: expiresAt,
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", connection.id);
 
     return clearPkce(
       NextResponse.redirect(`${appUrl}/integrations?connected=1`),

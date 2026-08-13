@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { queueStockSyncForVariant } from "@/app/actions/channels";
 import { requireOrganization } from "@/lib/tenancy";
 
 export async function createProductAction(formData: FormData) {
@@ -122,7 +123,13 @@ export async function updateInventoryAction(formData: FormData) {
       reason: "Ajuste manual",
       created_by: user.id,
     });
+
+    await queueStockSyncForVariant({
+      organizationId: organization.id,
+      productVariantId: current.product_variant_id,
+    });
   }
 
   revalidatePath("/inventory");
+  revalidatePath("/channels");
 }

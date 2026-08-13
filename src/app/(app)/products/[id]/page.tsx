@@ -8,7 +8,7 @@ export default async function ProductDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string; published?: string }>;
+  searchParams: Promise<{ error?: string; published?: string; updated?: string }>;
 }) {
   const { id } = await params;
   const query = await searchParams;
@@ -40,6 +40,10 @@ export default async function ProductDetailPage({
     return ch?.code === "mercado_livre";
   });
 
+  const hasPublishedMl = (listings ?? []).some(
+    (l) => l.external_id && (l.status === "published" || l.status === "paused"),
+  );
+
   return (
     <div>
       <p>
@@ -56,7 +60,9 @@ export default async function ProductDetailPage({
       ) : null}
       {query.published ? (
         <div className="panel" style={{ marginTop: 12 }}>
-          Publicação enviada. Veja o status em Listings abaixo.
+          {query.updated
+            ? "Atualização enviada ao Mercado Livre."
+            : "Publicação enviada. Veja o status em Listings abaixo."}
         </div>
       ) : null}
 
@@ -82,10 +88,10 @@ export default async function ProductDetailPage({
         </tbody>
       </table>
 
-      <h2 style={{ marginTop: 24 }}>Publicar em canal</h2>
+      <h2 style={{ marginTop: 24 }}>Mercado Livre</h2>
       <p className="muted">
-        Cria channel_listing + sync_job (não chama API no clique de forma síncrona
-        “descartável”).
+        Sem MLB: publica. Com MLB: atualiza preço, estoque e fotos (ou muda
+        Clássico/Premium no mesmo anúncio).
       </p>
 
       {mlConnections.length === 0 ? (
@@ -142,7 +148,7 @@ export default async function ProductDetailPage({
             </p>
           </div>
           <button type="submit" className="primary">
-            Publicar no Mercado Livre
+            {hasPublishedMl ? "Atualizar no Mercado Livre" : "Publicar no Mercado Livre"}
           </button>
         </form>
       )}

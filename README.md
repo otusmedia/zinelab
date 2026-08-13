@@ -28,6 +28,9 @@ npm run dev
 ```
 
 5. (Opcional) Mercado Livre: crie app em https://developers.mercadolivre.com.br/ e preencha `ML_APP_ID`, `ML_CLIENT_SECRET`, `ML_REDIRECT_URI`.
+   - Redirect URI: `https://zine-lab.vercel.app/api/integrations/mercado-livre/callback`
+   - Notifications URL: `https://zine-lab.vercel.app/api/integrations/mercado-livre/notifications`
+   - Topics úteis: `orders_v2`, `items`
 
 ## Isolamento
 
@@ -36,5 +39,7 @@ Ver `supabase/tests/isolation.sql`. Meta: Org A nunca lê/escreve dados da Org B
 ## Escopo V1
 
 Auth + organization + store default · produtos/variantes/estoque · clientes · pedidos com snapshot · OAuth ML · listings + sync_jobs · dashboard.
+
+Canal ML (polish): refresh de token, update preço/estoque/fotos, Classic/Premium, importação de pedidos, webhook de notificações, UI ops (disconnect/retry/pausar).
 
 Fora: loja builder, marketing, suporte IA, Ads, billing.

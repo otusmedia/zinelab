@@ -44,6 +44,14 @@ export function buildMercadoLivreAuthUrl(
   return url.toString();
 }
 
+export type MercadoLivreTokenResponse = {
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  token_type?: string;
+  user_id?: number | string;
+};
+
 export async function exchangeMercadoLivreCode(
   code: string,
   codeVerifier: string,
@@ -76,13 +84,37 @@ export async function exchangeMercadoLivreCode(
     throw new Error(`Token ML falhou: ${res.status} ${text}`);
   }
 
-  return res.json() as Promise<{
-    access_token: string;
-    refresh_token?: string;
-    expires_in?: number;
-    token_type?: string;
-    user_id?: number | string;
-  }>;
+  return res.json() as Promise<MercadoLivreTokenResponse>;
+}
+
+export async function refreshMercadoLivreToken(refreshToken: string) {
+  const { appId, clientSecret } = getMercadoLivreConfig();
+  if (!appId || !clientSecret) {
+    throw new Error("Credenciais ML não configuradas");
+  }
+
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    client_id: appId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+  });
+
+  const res = await fetch(ML_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Refresh token ML falhou: ${res.status} ${text}`);
+  }
+
+  return res.json() as Promise<MercadoLivreTokenResponse>;
 }
 
 export async function fetchMercadoLivreMe(accessToken: string) {
@@ -679,4 +711,148 @@ export async function pauseMercadoLivreItem(params: {
     return { ok: false as const, error: formatMlError(res.status, text) };
   }
   return { ok: true as const };
+}
+
+/** Update price / stock / pictures on an existing item. */
+export async function updateMercadoLivreItem(params: {
+  accessToken: string;
+  itemId: string;
+  price?: number;
+  availableQuantity?: number;
+  pictureUrls?: string[];
+  familyName?: string;
+}) {
+  const body: Record<string, unknown> = {};
+  if (params.price != null) body.price = Math.max(params.price, 1);
+  if (params.availableQuantity != null) {
+    body.available_quantity = Math.max(0, params.availableQuantity);
+  }
+  if (params.pictureUrls?.length) {
+    body.pictures = params.pictureUrls.map((source) => ({ source }));
+  }
+  if (params.familyName) body.family_name = params.familyName.slice(0, 60);
+
+  if (Object.keys(body).length === 0) {
+    return fetchMercadoLivreItem({
+      accessToken: params.accessToken,
+      itemId: params.itemId,
+    });
+  }
+
+  const res = await fetch(`${ML_API}/items/${params.itemId}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `ML update item (${params.itemId}): ${formatMlError(res.status, text)}`,
+    );
+  }
+  try {
+    return JSON.parse(text) as {
+      id: string;
+      permalink?: string;
+      listing_type_id?: string;
+      status?: string;
+      category_id?: string;
+    };
+  } catch {
+    return fetchMercadoLivreItem({
+      accessToken: params.accessToken,
+      itemId: params.itemId,
+    });
+  }
+}
+
+export type MercadoLivreOrder = {
+  id: number | string;
+  status?: string;
+  date_created?: string;
+  total_amount?: number;
+  currency_id?: string;
+  buyer?: {
+    id?: number;
+    nickname?: string;
+    email?: string;
+    first_name?: string;
+    last_name?: string;
+  };
+  order_items?: Array<{
+    item?: { id?: string; title?: string; seller_sku?: string };
+    quantity?: number;
+    unit_price?: number;
+    full_unit_price?: number;
+  }>;
+};
+
+export function mapMercadoLivreOrderStatus(
+  status: string | undefined,
+): "pending" | "paid" | "cancelled" | "fulfilled" | "refunded" {
+  const s = (status ?? "").toLowerCase();
+  if (["cancelled", "canceled"].includes(s)) return "cancelled";
+  if (["refunded"].includes(s)) return "refunded";
+  if (["delivered", "shipped"].includes(s)) return "fulfilled";
+  if (["paid", "confirmed"].includes(s)) return "paid";
+  return "pending";
+}
+
+export async function searchMercadoLivreOrders(params: {
+  accessToken: string;
+  sellerId: string;
+  fromIso: string;
+  toIso: string;
+  offset?: number;
+  limit?: number;
+}) {
+  const url = new URL(`${ML_API}/orders/search`);
+  url.searchParams.set("seller", params.sellerId);
+  url.searchParams.set("order.date_created.from", params.fromIso);
+  url.searchParams.set("order.date_created.to", params.toIso);
+  url.searchParams.set("sort", "date_desc");
+  url.searchParams.set("offset", String(params.offset ?? 0));
+  url.searchParams.set("limit", String(params.limit ?? 50));
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      Accept: "application/json",
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`ML orders/search: ${formatMlError(res.status, text)}`);
+  }
+  const json = JSON.parse(text) as {
+    results?: MercadoLivreOrder[];
+    paging?: { total?: number };
+  };
+  return {
+    results: json.results ?? [],
+    total: json.paging?.total ?? 0,
+  };
+}
+
+export async function getMercadoLivreOrder(params: {
+  accessToken: string;
+  orderId: string;
+}) {
+  const res = await fetch(`${ML_API}/orders/${params.orderId}`, {
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      Accept: "application/json",
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `ML get order (${params.orderId}): ${formatMlError(res.status, text)}`,
+    );
+  }
+  return JSON.parse(text) as MercadoLivreOrder;
 }
