@@ -65,6 +65,63 @@ export async function activateOwnStoreAction(_formData?: FormData) {
   redirect("/store?activated=1");
 }
 
+async function upsertOwnStoreListing(params: {
+  supabase: Awaited<ReturnType<typeof requireOrganization>>["supabase"];
+  organizationId: string;
+  organizationSlug: string;
+  connectionId: string;
+  productId: string;
+  variantId: string;
+}) {
+  const permalink = `/s/${params.organizationSlug}/p/${params.productId}`;
+  const externalId = `store:${params.variantId}`;
+
+  const { data: existing } = await params.supabase
+    .from("channel_listings")
+    .select("id")
+    .eq("organization_id", params.organizationId)
+    .eq("channel_connection_id", params.connectionId)
+    .eq("product_variant_id", params.variantId)
+    .maybeSingle();
+
+  if (existing) {
+    const { error } = await params.supabase
+      .from("channel_listings")
+      .update({
+        status: "published",
+        external_id: externalId,
+        last_error: null,
+        last_sync_at: new Date().toISOString(),
+        metadata: {
+          permalink,
+          channel: "own_store",
+          published_listing_type_id: "store",
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", existing.id);
+    if (error) throw new Error(error.message);
+    return "updated" as const;
+  }
+
+  const { error } = await params.supabase.from("channel_listings").insert({
+    organization_id: params.organizationId,
+    channel_connection_id: params.connectionId,
+    product_id: params.productId,
+    product_variant_id: params.variantId,
+    external_id: externalId,
+    status: "published",
+    last_sync_at: new Date().toISOString(),
+    metadata: {
+      permalink,
+      channel: "own_store",
+      published_listing_type_id: "store",
+    },
+  });
+  if (error) throw new Error(error.message);
+  return "created" as const;
+}
+
 export async function publishOwnStoreAction(formData: FormData) {
   const { supabase, organization } = await requireOrganization();
   const productId = String(formData.get("product_id") ?? "");
@@ -88,60 +145,69 @@ export async function publishOwnStoreAction(formData: FormData) {
     redirect(`/products/${productId}?error=${encodeURIComponent("Variante não encontrada")}`);
   }
 
-  const permalink = `/s/${organization.slug}/p/${productId}`;
-  const externalId = `store:${variantId}`;
-
-  const { data: existing } = await supabase
-    .from("channel_listings")
-    .select("id")
-    .eq("organization_id", organization.id)
-    .eq("channel_connection_id", connectionId)
-    .eq("product_variant_id", variantId)
-    .maybeSingle();
-
-  if (existing) {
-    const { error } = await supabase
-      .from("channel_listings")
-      .update({
-        status: "published",
-        external_id: externalId,
-        last_error: null,
-        last_sync_at: new Date().toISOString(),
-        metadata: {
-          permalink,
-          channel: "own_store",
-          published_listing_type_id: "store",
-        },
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", existing.id);
-    if (error) {
-      redirect(`/products/${productId}?error=${encodeURIComponent(error.message)}`);
-    }
-  } else {
-    const { error } = await supabase.from("channel_listings").insert({
-      organization_id: organization.id,
-      channel_connection_id: connectionId,
-      product_id: productId,
-      product_variant_id: variantId,
-      external_id: externalId,
-      status: "published",
-      last_sync_at: new Date().toISOString(),
-      metadata: {
-        permalink,
-        channel: "own_store",
-        published_listing_type_id: "store",
-      },
+  try {
+    await upsertOwnStoreListing({
+      supabase,
+      organizationId: organization.id,
+      organizationSlug: organization.slug,
+      connectionId,
+      productId,
+      variantId,
     });
-    if (error) {
-      redirect(`/products/${productId}?error=${encodeURIComponent(error.message)}`);
-    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Falha ao publicar";
+    redirect(`/products/${productId}?error=${encodeURIComponent(message)}`);
   }
 
   revalidatePath(`/products/${productId}`);
   revalidatePath("/store");
   revalidatePath(`/s/${organization.slug}`);
   redirect(`/products/${productId}?store_published=1`);
+}
+
+/** Publish every active product/variant into the own-store channel. */
+export async function publishAllOwnStoreAction(_formData?: FormData) {
+  const { supabase, organization } = await requireOrganization();
+  const connectionId = await ensureOwnStoreConnection(organization.id);
+
+  const { data: variants, error } = await supabase
+    .from("product_variants")
+    .select("id, product_id, products!inner(id, status)")
+    .eq("organization_id", organization.id)
+    .eq("status", "active")
+    .eq("products.status", "active");
+
+  if (error) {
+    redirect(`/store?error=${encodeURIComponent(error.message)}`);
+  }
+
+  let created = 0;
+  let updated = 0;
+  let failed = 0;
+
+  for (const row of variants ?? []) {
+    try {
+      const result = await upsertOwnStoreListing({
+        supabase,
+        organizationId: organization.id,
+        organizationSlug: organization.slug,
+        connectionId,
+        productId: row.product_id,
+        variantId: row.id,
+      });
+      if (result === "created") created += 1;
+      else updated += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+
+  revalidatePath("/store");
+  revalidatePath("/products");
+  revalidatePath(`/s/${organization.slug}`);
+  redirect(
+    `/store?bulk=1&created=${created}&updated=${updated}&failed=${failed}`,
+  );
 }
 
 export async function unpublishOwnStoreAction(formData: FormData) {
