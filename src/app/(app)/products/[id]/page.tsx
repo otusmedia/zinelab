@@ -5,10 +5,13 @@ import { queuePublishListingAction } from "@/app/actions/channels";
 
 export default async function ProductDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ error?: string; published?: string }>;
 }) {
   const { id } = await params;
+  const query = await searchParams;
   const { supabase, organization } = await requireOrganization();
 
   const { data: product } = await supabase
@@ -45,6 +48,17 @@ export default async function ProductDetailPage({
       <h1>{product.name}</h1>
       <p className="muted">{product.status}</p>
       <p>{product.description || "Sem descrição"}</p>
+
+      {query.error ? (
+        <div className="error" style={{ marginTop: 12 }}>
+          {query.error}
+        </div>
+      ) : null}
+      {query.published ? (
+        <div className="panel" style={{ marginTop: 12 }}>
+          Publicação enviada. Veja o status em Listings abaixo.
+        </div>
+      ) : null}
 
       <h2>Variantes</h2>
       <table>

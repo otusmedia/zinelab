@@ -49,20 +49,60 @@ export async function queuePublishListingAction(formData: FormData) {
   const variantId = String(formData.get("product_variant_id") ?? "");
   const connectionId = String(formData.get("channel_connection_id") ?? "");
 
-  const { data: listing, error: listingError } = await supabase
-    .from("channel_listings")
-    .insert({
-      organization_id: organization.id,
-      channel_connection_id: connectionId,
-      product_id: productId,
-      product_variant_id: variantId,
-      status: "pending",
-    })
-    .select("*")
-    .single();
+  const fail = (message: string) => {
+    redirect(
+      `/products/${productId}?error=${encodeURIComponent(message)}`,
+    );
+  };
 
-  if (listingError || !listing) {
-    throw new Error(listingError?.message ?? "Falha ao criar listing");
+  // Reuse existing listing for same connection+variant (republish)
+  const { data: existing } = await supabase
+    .from("channel_listings")
+    .select("*")
+    .eq("organization_id", organization.id)
+    .eq("channel_connection_id", connectionId)
+    .eq("product_variant_id", variantId)
+    .maybeSingle();
+
+  let listing = existing;
+
+  if (listing) {
+    const { data: updated, error: updateError } = await supabase
+      .from("channel_listings")
+      .update({
+        status: "pending",
+        last_error: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", listing.id)
+      .select("*")
+      .single();
+
+    if (updateError || !updated) {
+      fail(updateError?.message ?? "Falha ao atualizar listing");
+    }
+    listing = updated;
+  } else {
+    const { data: created, error: listingError } = await supabase
+      .from("channel_listings")
+      .insert({
+        organization_id: organization.id,
+        channel_connection_id: connectionId,
+        product_id: productId,
+        product_variant_id: variantId,
+        status: "pending",
+      })
+      .select("*")
+      .single();
+
+    if (listingError || !created) {
+      fail(listingError?.message ?? "Falha ao criar listing");
+    }
+    listing = created;
+  }
+
+  if (!listing) {
+    fail("Listing inválido");
   }
 
   const { data: job, error: jobError } = await supabase
@@ -80,14 +120,15 @@ export async function queuePublishListingAction(formData: FormData) {
     .single();
 
   if (jobError || !job) {
-    throw new Error(jobError?.message ?? "Falha ao criar sync_job");
+    fail(jobError?.message ?? "Falha ao criar sync_job");
   }
 
   // Process in-process (no Redis/BullMQ). Failures become sync_error.
-  await processSyncJob(job.id);
+  await processSyncJob(job!.id);
 
   revalidatePath(`/products/${productId}`);
   revalidatePath("/channels");
+  redirect(`/products/${productId}?published=1`);
 }
 
 export async function processSyncJob(jobId: string) {
