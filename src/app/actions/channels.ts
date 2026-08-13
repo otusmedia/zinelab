@@ -119,7 +119,7 @@ export async function processSyncJob(jobId: string) {
 
       const { data: listing } = await admin
         .from("channel_listings")
-        .select("*, product_variants(*), products(name)")
+        .select("*, product_variants(*), products(id, name, description)")
         .eq("id", job.entity_id)
         .single();
 
@@ -141,17 +141,41 @@ export async function processSyncJob(jobId: string) {
         price: number;
         name: string | null;
       } | null;
-      const product = listing.products as unknown as { name: string } | null;
+      const product = listing.products as unknown as {
+        id: string;
+        name: string;
+        description: string | null;
+      } | null;
       const title =
         listing.title_override ||
         `${product?.name ?? "Produto"} ${variant?.name ?? ""}`.trim();
       const price = Number(listing.price_override ?? variant?.price ?? 0);
+
+      const { data: images } = product?.id
+        ? await admin
+            .from("product_images")
+            .select("storage_path")
+            .eq("product_id", product.id)
+            .order("position", { ascending: true })
+        : { data: [] as Array<{ storage_path: string }> };
+
+      const appUrl =
+        process.env.NEXT_PUBLIC_APP_URL ?? "https://zine-lab.vercel.app";
+      const pictureUrls = (images ?? [])
+        .map((img) =>
+          img.storage_path.startsWith("http")
+            ? img.storage_path
+            : `${appUrl}${img.storage_path.startsWith("/") ? "" : "/"}${img.storage_path}`,
+        )
+        .filter(Boolean);
 
       const result = await publishMercadoLivreItem({
         accessToken: secret.access_token,
         title,
         price,
         availableQuantity: 1,
+        description: product?.description,
+        pictureUrls,
       });
 
       await admin
@@ -161,6 +185,10 @@ export async function processSyncJob(jobId: string) {
           external_id: result.id ?? null,
           last_sync_at: new Date().toISOString(),
           last_error: null,
+          metadata: {
+            category_id: result.category_id ?? null,
+            permalink: result.permalink ?? null,
+          },
           updated_at: new Date().toISOString(),
         })
         .eq("id", listing.id);
