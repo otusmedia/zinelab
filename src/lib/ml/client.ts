@@ -111,9 +111,18 @@ type MlAttrPayload = {
 };
 
 async function discoverCategory(accessToken: string, title: string) {
+  const t = title.toLowerCase();
+  const isSunglasses =
+    (t.includes("oculos") || t.includes("óculos")) && t.includes("sol");
+
+  // Better search query improves category match (e.g. avoid "ciclismo")
+  const query = isSunglasses
+    ? `óculos de sol ${guessBrand(title)}`.trim()
+    : title;
+
   const url = new URL(`${ML_API}/sites/MLB/domain_discovery/search`);
   url.searchParams.set("limit", "8");
-  url.searchParams.set("q", title);
+  url.searchParams.set("q", query);
 
   const res = await fetch(url, {
     headers: {
@@ -130,21 +139,27 @@ async function discoverCategory(accessToken: string, title: string) {
     category_name?: string;
     domain_id?: string;
     domain_name?: string;
+    attributes?: Array<{
+      id: string;
+      value_id?: string;
+      value_name?: string;
+    }>;
   }>;
 
   if (!data?.length) {
     throw new Error("ML não encontrou categoria para este título");
   }
 
-  const t = title.toLowerCase();
   const scored = data.map((item, index) => {
     const name =
-      `${item.category_name ?? ""} ${item.domain_name ?? ""}`.toLowerCase();
+      `${item.category_name ?? ""} ${item.domain_name ?? ""} ${item.domain_id ?? ""}`.toLowerCase();
     let score = 100 - index;
-    if (t.includes("sol") && name.includes("sol")) score += 50;
-    if (t.includes("sol") && name.includes("ciclismo")) score -= 40;
+    if (item.domain_id === "MLB-SUNGLASSES") score += 100;
+    if (item.category_id === "MLB8378") score += 80;
+    if (isSunglasses && name.includes("sol") && !name.includes("ciclismo"))
+      score += 60;
+    if (isSunglasses && name.includes("ciclismo")) score -= 80;
     if (t.includes("ciclismo") && name.includes("ciclismo")) score += 50;
-    if (t.includes("grau") && name.includes("grau")) score += 40;
     return { item, score };
   });
 
@@ -195,14 +210,28 @@ function guessBrand(title: string) {
 function buildRequiredAttributes(
   attrs: MlAttributeDef[],
   title: string,
+  suggested?: Array<{ id: string; value_id?: string; value_name?: string }>,
 ): MlAttrPayload[] {
+  const out: MlAttrPayload[] = [];
+  const suggestedMap = new Map((suggested ?? []).map((s) => [s.id, s]));
+
   const required = attrs.filter(
     (a) => a.tags?.required || a.tags?.catalog_required,
   );
 
-  const out: MlAttrPayload[] = [];
-
   for (const attr of required) {
+    const fromDiscovery = suggestedMap.get(attr.id);
+    if (fromDiscovery?.value_name || fromDiscovery?.value_id) {
+      out.push({
+        id: attr.id,
+        ...(fromDiscovery.value_id ? { value_id: fromDiscovery.value_id } : {}),
+        ...(fromDiscovery.value_name
+          ? { value_name: fromDiscovery.value_name }
+          : {}),
+      });
+      continue;
+    }
+
     if (attr.id === "BRAND") {
       out.push({ id: "BRAND", value_name: guessBrand(title) });
       continue;
@@ -212,18 +241,15 @@ function buildRequiredAttributes(
       continue;
     }
     if (attr.id === "GTIN" || attr.id === "EAN" || attr.id === "UPC") {
-      // skip empty GTIN when not known — some cats require it; try placeholder skip
       continue;
     }
     if (attr.id === "ITEM_CONDITION") {
-      const neu = attr.values?.find((v) =>
-        /novo|new/i.test(v.name),
-      );
+      const neu = attr.values?.find((v) => /novo|new/i.test(v.name));
       if (neu) out.push({ id: attr.id, value_id: neu.id, value_name: neu.name });
       continue;
     }
+    // Prefer enumerated values only — avoid inventing free-text that ML rejects
     if (attr.values?.length) {
-      // pick first enumerated value as best-effort default
       const v = attr.values[0];
       out.push({ id: attr.id, value_id: v.id, value_name: v.name });
       continue;
@@ -233,19 +259,16 @@ function buildRequiredAttributes(
         id: attr.id,
         value_name: `1 ${attr.allowed_units[0].id}`,
       });
-      continue;
-    }
-    if (attr.value_type === "string" || attr.value_type === "number") {
-      out.push({
-        id: attr.id,
-        value_name: attr.value_type === "number" ? "1" : "Não informado",
-      });
     }
   }
 
-  // Always try to send BRAND even if not marked required
   if (!out.some((a) => a.id === "BRAND")) {
-    out.push({ id: "BRAND", value_name: guessBrand(title) });
+    const brand = suggestedMap.get("BRAND");
+    out.push({
+      id: "BRAND",
+      value_id: brand?.value_id,
+      value_name: brand?.value_name ?? guessBrand(title),
+    });
   }
 
   return out;
@@ -256,10 +279,19 @@ function formatMlError(status: number, text: string) {
     const json = JSON.parse(text) as {
       message?: string;
       error?: string;
-      cause?: Array<{ code?: string; message?: string; type?: string }>;
+      cause?: Array<{
+        code?: string;
+        message?: string;
+        type?: string;
+        cause_id?: number;
+        references?: string[];
+      }>;
     };
     const causes = (json.cause ?? [])
-      .map((c) => c.message || c.code)
+      .map((c) => {
+        const refs = c.references?.length ? ` [${c.references.join(", ")}]` : "";
+        return `${c.message || c.code || "cause"}${refs}`;
+      })
       .filter(Boolean)
       .join("; ");
     return (
@@ -276,6 +308,7 @@ function formatMlError(status: number, text: string) {
 
 /**
  * Publish item with category discovery + required attributes + picture.
+ * User Products model: send family_name (title is generated by ML).
  */
 export async function publishMercadoLivreItem(params: {
   accessToken: string;
@@ -292,7 +325,11 @@ export async function publishMercadoLivreItem(params: {
     params.accessToken,
     categoryId,
   );
-  const attributes = buildRequiredAttributes(attrDefs, title);
+  const attributes = buildRequiredAttributes(
+    attrDefs,
+    title,
+    discovered.attributes,
+  );
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://zine-lab.vercel.app";
   const pictures = (
@@ -303,8 +340,8 @@ export async function publishMercadoLivreItem(params: {
 
   const familyName = buildFamilyName(title);
 
-  const payload = {
-    title,
+  // UP model: family_name is required; title is usually generated by ML.
+  const payload: Record<string, unknown> = {
     family_name: familyName,
     category_id: categoryId,
     price: Math.max(params.price, 1),
@@ -316,15 +353,6 @@ export async function publishMercadoLivreItem(params: {
     channels: ["marketplace"],
     pictures,
     attributes,
-    sale_terms: [
-      { id: "WARRANTY_TYPE", value_name: "Garantia do vendedor" },
-      { id: "WARRANTY_TIME", value_name: "90 dias" },
-    ],
-    shipping: {
-      mode: "me2",
-      local_pick_up: false,
-      free_shipping: false,
-    },
   };
 
   const res = await fetch(`${ML_API}/items`, {
@@ -346,12 +374,50 @@ export async function publishMercadoLivreItem(params: {
   }
 
   if (!res.ok) {
+    // Retry once with title included (some accounts still expect it)
+    if (text.includes("invalid_fields") || text.includes("required_fields")) {
+      const retryPayload = { ...payload, title };
+      const retry = await fetch(`${ML_API}/items`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${params.accessToken}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(retryPayload),
+      });
+      const retryText = await retry.text();
+      try {
+        json = JSON.parse(retryText);
+      } catch {
+        json = {};
+      }
+      if (retry.ok) {
+        if (params.description && json.id) {
+          await fetch(`${ML_API}/items/${json.id}/description`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${params.accessToken}`,
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({
+              plain_text: params.description.slice(0, 50000),
+            }),
+          }).catch(() => null);
+        }
+        return { ...json, category_id: categoryId };
+      }
+      throw new Error(
+        `ML publish (${categoryId} · ${discovered.category_name ?? "?"}): ${formatMlError(retry.status, retryText)}`,
+      );
+    }
+
     throw new Error(
       `ML publish (${categoryId} · ${discovered.category_name ?? "?"}): ${formatMlError(res.status, text)}`,
     );
   }
 
-  // Optional description after create
   if (params.description && json.id) {
     await fetch(`${ML_API}/items/${json.id}/description`, {
       method: "POST",
