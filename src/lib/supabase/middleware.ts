@@ -37,19 +37,29 @@ export async function updateSession(request: NextRequest) {
     path.startsWith("/login") ||
     path.startsWith("/signup") ||
     path.startsWith("/auth");
+  const isJoinRoute = path.startsWith("/join/");
   const isPublicApi = path.startsWith(
     "/api/integrations/mercado-livre/callback",
   );
 
-  if (!user && !isAuthRoute && !isPublicApi && path !== "/") {
+  if (
+    !user &&
+    !isAuthRoute &&
+    !isJoinRoute &&
+    !isPublicApi &&
+    path !== "/"
+  ) {
     const redirectUrl = request.nextUrl.clone();
     redirectUrl.pathname = "/login";
     return NextResponse.redirect(redirectUrl);
   }
 
   if (user && (path === "/login" || path === "/signup")) {
+    const next = request.nextUrl.searchParams.get("next");
     const redirectUrl = request.nextUrl.clone();
-    redirectUrl.pathname = "/dashboard";
+    redirectUrl.pathname =
+      next && next.startsWith("/") ? next : "/dashboard";
+    redirectUrl.search = "";
     return NextResponse.redirect(redirectUrl);
   }
 

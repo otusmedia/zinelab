@@ -18,11 +18,13 @@ function slugify(input: string) {
 export async function signUp(formData: FormData) {
   const email = String(formData.get("email") ?? "");
   const password = String(formData.get("password") ?? "");
+  const next = String(formData.get("next") ?? "").trim();
   const supabase = await createClient();
 
   const { data, error } = await supabase.auth.signUp({ email, password });
   if (error) {
-    redirect(`/signup?error=${encodeURIComponent(error.message)}`);
+    const q = next ? `&next=${encodeURIComponent(next)}` : "";
+    redirect(`/signup?error=${encodeURIComponent(error.message)}${q}`);
   }
 
   // If email confirmation is enabled, there is no session yet.
@@ -30,24 +32,26 @@ export async function signUp(formData: FormData) {
     redirect(
       `/login?message=${encodeURIComponent(
         "Conta criada. Confirme o email (ou desative confirmação no Supabase) e entre.",
-      )}`,
+      )}&next=${encodeURIComponent(next || "/onboarding")}`,
     );
   }
 
-  redirect("/onboarding");
+  redirect(next && next.startsWith("/") ? next : "/onboarding");
 }
 
 export async function signIn(formData: FormData) {
   const email = String(formData.get("email") ?? "");
   const password = String(formData.get("password") ?? "");
+  const next = String(formData.get("next") ?? "").trim();
   const supabase = await createClient();
 
   const { error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) {
-    redirect(`/login?error=${encodeURIComponent(error.message)}`);
+    const q = next ? `&next=${encodeURIComponent(next)}` : "";
+    redirect(`/login?error=${encodeURIComponent(error.message)}${q}`);
   }
 
-  redirect("/dashboard");
+  redirect(next && next.startsWith("/") ? next : "/dashboard");
 }
 
 export async function signOut() {

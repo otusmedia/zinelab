@@ -4,7 +4,7 @@ import { signIn } from "@/app/actions/auth";
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; message?: string }>;
+  searchParams: Promise<{ error?: string; message?: string; next?: string }>;
 }) {
   const params = await searchParams;
 
@@ -25,6 +25,9 @@ export default async function LoginPage({
       ) : null}
 
       <form action={signIn} className="panel" style={{ marginTop: 16 }}>
+        {params.next ? (
+          <input type="hidden" name="next" value={params.next} />
+        ) : null}
         <div className="field">
           <label className="label" htmlFor="email">
             Email
@@ -42,7 +45,16 @@ export default async function LoginPage({
         </button>
       </form>
       <p style={{ marginTop: 16 }}>
-        Não tem conta? <Link href="/signup">Criar conta</Link>
+        Não tem conta?{" "}
+        <Link
+          href={
+            params.next
+              ? `/signup?next=${encodeURIComponent(params.next)}`
+              : "/signup"
+          }
+        >
+          Criar conta
+        </Link>
       </p>
     </main>
   );
