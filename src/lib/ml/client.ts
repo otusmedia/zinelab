@@ -112,11 +112,14 @@ type MlAttrPayload = {
 
 async function discoverCategory(accessToken: string, title: string) {
   const url = new URL(`${ML_API}/sites/MLB/domain_discovery/search`);
-  url.searchParams.set("limit", "3");
+  url.searchParams.set("limit", "8");
   url.searchParams.set("q", title);
 
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+    },
   });
   if (!res.ok) {
     throw new Error(`domain_discovery falhou: ${res.status}`);
@@ -126,13 +129,37 @@ async function discoverCategory(accessToken: string, title: string) {
     category_id: string;
     category_name?: string;
     domain_id?: string;
+    domain_name?: string;
   }>;
 
   if (!data?.length) {
     throw new Error("ML não encontrou categoria para este título");
   }
 
-  return data[0];
+  const t = title.toLowerCase();
+  const scored = data.map((item, index) => {
+    const name =
+      `${item.category_name ?? ""} ${item.domain_name ?? ""}`.toLowerCase();
+    let score = 100 - index;
+    if (t.includes("sol") && name.includes("sol")) score += 50;
+    if (t.includes("sol") && name.includes("ciclismo")) score -= 40;
+    if (t.includes("ciclismo") && name.includes("ciclismo")) score += 50;
+    if (t.includes("grau") && name.includes("grau")) score += 40;
+    return { item, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0].item;
+}
+
+function buildFamilyName(title: string) {
+  const brand = guessBrand(title);
+  const cleaned = title
+    .replace(new RegExp(brand, "ig"), "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const family = cleaned ? `${brand} ${cleaned}` : brand;
+  return family.slice(0, 60);
 }
 
 async function fetchCategoryAttributes(accessToken: string, categoryId: string) {
@@ -274,8 +301,11 @@ export async function publishMercadoLivreItem(params: {
       : [`${appUrl}/ml-placeholder.png`]
   ).map((source) => ({ source }));
 
+  const familyName = buildFamilyName(title);
+
   const payload = {
     title,
+    family_name: familyName,
     category_id: categoryId,
     price: Math.max(params.price, 1),
     currency_id: "BRL",
