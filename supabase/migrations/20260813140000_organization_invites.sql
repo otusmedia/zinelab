@@ -64,7 +64,7 @@ begin
     organization_id, token, role, created_by, expires_at
   ) values (
     v_org_id,
-    encode(gen_random_bytes(24), 'hex'),
+    encode(extensions.gen_random_bytes(24), 'hex'),
     v_role,
     v_user_id,
     now() + interval '7 days'
@@ -106,7 +106,7 @@ begin
     organization_id, token, role, created_by, expires_at
   ) values (
     p_organization_id,
-    encode(gen_random_bytes(24), 'hex'),
+    encode(extensions.gen_random_bytes(24), 'hex'),
     v_role,
     v_user_id,
     now() + interval '7 days'
