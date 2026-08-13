@@ -14,11 +14,14 @@ import {
   changeMercadoLivreListingType,
   createPkcePair,
   fetchMercadoLivreItem,
+  fetchMercadoLivreItemDescription,
+  fetchMercadoLivreItemsMultiget,
   getMercadoLivreOrder,
   mapMercadoLivreOrderStatus,
   pauseMercadoLivreItem,
   publishMercadoLivreItem,
   searchMercadoLivreOrders,
+  searchMercadoLivreSellerItems,
   updateMercadoLivreItem,
   type MercadoLivreOrder,
 } from "@/lib/ml/client";
@@ -129,6 +132,52 @@ export async function importMercadoLivreOrdersAction(formData: FormData) {
   revalidatePath("/orders");
   revalidatePath("/channels");
   redirect("/orders?imported=1");
+}
+
+export async function importMercadoLivreProductsAction(formData: FormData) {
+  const { supabase, organization } = await requireOrganization();
+  const connectionId = String(formData.get("channel_connection_id") ?? "");
+  const redirectTo = String(formData.get("redirect_to") ?? "/products");
+
+  const { data: connection } = await supabase
+    .from("channel_connections")
+    .select("id, status")
+    .eq("id", connectionId)
+    .eq("organization_id", organization.id)
+    .maybeSingle();
+
+  if (!connection || connection.status !== "connected") {
+    redirect(
+      `${redirectTo}?error=${encodeURIComponent("Conexão ML inválida ou desconectada")}`,
+    );
+  }
+
+  const { data: job, error } = await supabase
+    .from("sync_jobs")
+    .insert({
+      organization_id: organization.id,
+      channel_connection_id: connectionId,
+      type: "import_products",
+      entity_type: "channel_connection",
+      entity_id: connectionId,
+      status: "queued",
+      payload: { limit: 50, status: "active" },
+    })
+    .select("*")
+    .single();
+
+  if (error || !job) {
+    redirect(
+      `${redirectTo}?error=${encodeURIComponent(error?.message ?? "Falha ao criar job")}`,
+    );
+  }
+
+  await processSyncJob(job.id);
+  revalidatePath("/integrations");
+  revalidatePath("/products");
+  revalidatePath("/channels");
+  revalidatePath("/inventory");
+  redirect(`${redirectTo}?imported_products=1`);
 }
 
 export async function retrySyncJobAction(formData: FormData) {
@@ -1004,6 +1053,222 @@ export async function processSyncJob(jobId: string) {
               : {}),
             imported,
             created,
+          },
+        })
+        .eq("id", jobId);
+      return;
+    }
+
+    if (job.type === "import_products" && job.channel_connection_id) {
+      const connectionId = job.channel_connection_id as string;
+      const { data: connection } = await admin
+        .from("channel_connections")
+        .select("id, organization_id, external_account_id")
+        .eq("id", connectionId)
+        .single();
+      if (!connection?.external_account_id) {
+        throw new Error("Conexão ML sem external_account_id");
+      }
+
+      const accessToken = await getValidAccessToken(connectionId);
+      const storeId = await getDefaultStoreId(
+        admin,
+        connection.organization_id,
+      );
+      if (!storeId) throw new Error("Store default não encontrada");
+
+      const limit = Math.min(
+        50,
+        Number((job.payload as { limit?: number } | null)?.limit ?? 50) || 50,
+      );
+      const statusFilter =
+        (job.payload as { status?: string } | null)?.status ?? "active";
+
+      const search = await searchMercadoLivreSellerItems({
+        accessToken,
+        sellerId: connection.external_account_id,
+        status: statusFilter,
+        offset: 0,
+        limit,
+      });
+
+      let created = 0;
+      let skipped = 0;
+      let failed = 0;
+
+      for (let i = 0; i < search.results.length; i += 20) {
+        const chunk = search.results.slice(i, i + 20);
+        const items = await fetchMercadoLivreItemsMultiget({
+          accessToken,
+          itemIds: chunk,
+        });
+
+        for (const item of items) {
+          try {
+            const { data: existingListing } = await admin
+              .from("channel_listings")
+              .select("id")
+              .eq("organization_id", connection.organization_id)
+              .eq("channel_connection_id", connectionId)
+              .eq("external_id", item.id)
+              .maybeSingle();
+
+            if (existingListing) {
+              skipped += 1;
+              continue;
+            }
+
+            const description = await fetchMercadoLivreItemDescription({
+              accessToken,
+              itemId: item.id,
+            });
+
+            const title = (item.title || item.id).slice(0, 200);
+            const price = Math.max(Number(item.price ?? 0), 0);
+            const qty = Math.max(0, Number(item.available_quantity ?? 0));
+            const baseSku = (
+              item.seller_custom_field ||
+              `ML-${item.id}`
+            ).slice(0, 60);
+
+            let sku = baseSku;
+            for (let n = 0; n < 5; n += 1) {
+              const candidate = n === 0 ? sku : `${baseSku}-${n}`.slice(0, 60);
+              const { data: skuHit } = await admin
+                .from("product_variants")
+                .select("id")
+                .eq("organization_id", connection.organization_id)
+                .eq("sku", candidate)
+                .maybeSingle();
+              if (!skuHit) {
+                sku = candidate;
+                break;
+              }
+              if (n === 4) sku = `ML-${item.id}-${Date.now()}`.slice(0, 60);
+            }
+
+            const { data: product, error: productError } = await admin
+              .from("products")
+              .insert({
+                organization_id: connection.organization_id,
+                name: title,
+                description: description?.slice(0, 50000) || null,
+                status:
+                  item.status === "active" || item.status === "paused"
+                    ? "active"
+                    : "draft",
+              })
+              .select("id")
+              .single();
+            if (productError || !product) {
+              throw new Error(productError?.message ?? "Falha ao criar produto");
+            }
+
+            const { data: variant, error: variantError } = await admin
+              .from("product_variants")
+              .insert({
+                organization_id: connection.organization_id,
+                product_id: product.id,
+                sku,
+                name: "Padrão",
+                price: price || 1,
+                status: "active",
+              })
+              .select("id")
+              .single();
+            if (variantError || !variant) {
+              throw new Error(variantError?.message ?? "Falha ao criar variante");
+            }
+
+            await admin.from("inventory").insert({
+              organization_id: connection.organization_id,
+              store_id: storeId,
+              product_variant_id: variant.id,
+              quantity: qty,
+              reserved: 0,
+              reorder_point: 0,
+            });
+
+            if (qty > 0) {
+              await admin.from("inventory_movements").insert({
+                organization_id: connection.organization_id,
+                store_id: storeId,
+                product_variant_id: variant.id,
+                type: "in",
+                quantity: qty,
+                reason: `Importado do ML ${item.id}`,
+                reference_type: "ml_import",
+                reference_id: null,
+              });
+            }
+
+            const pictureUrls = (item.pictures ?? [])
+              .map((p) => p.secure_url || p.url || "")
+              .filter((u) => u.startsWith("https://"))
+              .slice(0, 12);
+
+            if (pictureUrls.length) {
+              await admin.from("product_images").insert(
+                pictureUrls.map((url, index) => ({
+                  organization_id: connection.organization_id,
+                  product_id: product.id,
+                  storage_path: url,
+                  position: index,
+                  alt: title.slice(0, 120),
+                })),
+              );
+            }
+
+            const listingTypeId =
+              item.listing_type_id === "gold_pro"
+                ? "gold_pro"
+                : "gold_special";
+
+            await admin.from("channel_listings").insert({
+              organization_id: connection.organization_id,
+              channel_connection_id: connectionId,
+              product_id: product.id,
+              product_variant_id: variant.id,
+              external_id: item.id,
+              status:
+                item.status === "paused"
+                  ? "paused"
+                  : item.status === "closed"
+                    ? "closed"
+                    : "published",
+              last_sync_at: new Date().toISOString(),
+              metadata: {
+                category_id: item.category_id ?? null,
+                permalink: item.permalink ?? null,
+                listing_type_id: listingTypeId,
+                published_listing_type_id: listingTypeId,
+                ml_status: item.status ?? null,
+                imported_from_ml: true,
+              },
+            });
+
+            created += 1;
+          } catch {
+            failed += 1;
+          }
+        }
+      }
+
+      await admin
+        .from("sync_jobs")
+        .update({
+          status: "succeeded",
+          completed_at: new Date().toISOString(),
+          error_message: null,
+          payload: {
+            ...(typeof job.payload === "object" && job.payload
+              ? job.payload
+              : {}),
+            total_on_ml: search.total,
+            scanned: search.results.length,
+            created,
+            skipped,
+            failed,
           },
         })
         .eq("id", jobId);

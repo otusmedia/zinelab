@@ -646,6 +646,20 @@ export async function changeMercadoLivreListingType(params: {
   }
 }
 
+export type MercadoLivreItemDetail = {
+  id: string;
+  title?: string;
+  price?: number;
+  available_quantity?: number;
+  status?: string;
+  permalink?: string;
+  category_id?: string;
+  listing_type_id?: string;
+  seller_custom_field?: string | null;
+  pictures?: Array<{ url?: string; secure_url?: string }>;
+  attributes?: Array<{ id?: string; name?: string; value_name?: string }>;
+};
+
 export async function fetchMercadoLivreItem(params: {
   accessToken: string;
   itemId: string;
@@ -662,12 +676,86 @@ export async function fetchMercadoLivreItem(params: {
       `ML get item (${params.itemId}): ${formatMlError(res.status, text)}`,
     );
   }
-  return JSON.parse(text) as {
-    id: string;
-    permalink?: string;
-    listing_type_id?: string;
-    status?: string;
-    category_id?: string;
+  return JSON.parse(text) as MercadoLivreItemDetail;
+}
+
+export async function fetchMercadoLivreItemsMultiget(params: {
+  accessToken: string;
+  itemIds: string[];
+}) {
+  if (params.itemIds.length === 0) return [] as MercadoLivreItemDetail[];
+  const ids = params.itemIds.slice(0, 20).join(",");
+  const res = await fetch(`${ML_API}/items?ids=${encodeURIComponent(ids)}`, {
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      Accept: "application/json",
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`ML items multiget: ${formatMlError(res.status, text)}`);
+  }
+  const rows = JSON.parse(text) as Array<{
+    code?: number;
+    body?: MercadoLivreItemDetail;
+  }>;
+  return rows
+    .filter((r) => (r.code === 200 || !r.code) && r.body?.id)
+    .map((r) => r.body as MercadoLivreItemDetail);
+}
+
+export async function fetchMercadoLivreItemDescription(params: {
+  accessToken: string;
+  itemId: string;
+}) {
+  const res = await fetch(`${ML_API}/items/${params.itemId}/description`, {
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      Accept: "application/json",
+    },
+  });
+  if (!res.ok) return null;
+  try {
+    const json = (await res.json()) as { plain_text?: string; text?: string };
+    return json.plain_text || json.text || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function searchMercadoLivreSellerItems(params: {
+  accessToken: string;
+  sellerId: string;
+  status?: string;
+  offset?: number;
+  limit?: number;
+}) {
+  const url = new URL(
+    `${ML_API}/users/${params.sellerId}/items/search`,
+  );
+  if (params.status) url.searchParams.set("status", params.status);
+  url.searchParams.set("offset", String(params.offset ?? 0));
+  url.searchParams.set("limit", String(params.limit ?? 50));
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      Accept: "application/json",
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `ML users/items/search: ${formatMlError(res.status, text)}`,
+    );
+  }
+  const json = JSON.parse(text) as {
+    results?: string[];
+    paging?: { total?: number; offset?: number; limit?: number };
+  };
+  return {
+    results: json.results ?? [],
+    total: json.paging?.total ?? 0,
   };
 }
 

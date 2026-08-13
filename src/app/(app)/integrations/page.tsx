@@ -1,6 +1,7 @@
 import {
   disconnectMercadoLivreAction,
   importMercadoLivreOrdersAction,
+  importMercadoLivreProductsAction,
   startMercadoLivreOAuth,
 } from "@/app/actions/channels";
 import { requireOrganization } from "@/lib/tenancy";
@@ -24,6 +25,7 @@ export default async function IntegrationsPage({
     error?: string;
     connected?: string;
     disconnected?: string;
+    imported_products?: string;
   }>;
 }) {
   const params = await searchParams;
@@ -58,6 +60,11 @@ export default async function IntegrationsPage({
       {params.disconnected ? (
         <div className="panel" style={{ marginTop: 12 }}>
           Conta desconectada.
+        </div>
+      ) : null}
+      {params.imported_products ? (
+        <div className="panel" style={{ marginTop: 12 }}>
+          Importação de produtos ML concluída. Veja em Produtos / Anúncios.
         </div>
       ) : null}
       {params.error ? (
@@ -123,6 +130,19 @@ export default async function IntegrationsPage({
                 <td style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {ch?.code === "mercado_livre" && c.status === "connected" ? (
                     <>
+                      <form action={importMercadoLivreProductsAction}>
+                        <input
+                          type="hidden"
+                          name="channel_connection_id"
+                          value={c.id}
+                        />
+                        <input
+                          type="hidden"
+                          name="redirect_to"
+                          value="/integrations"
+                        />
+                        <button type="submit">Importar produtos</button>
+                      </form>
                       <form action={importMercadoLivreOrdersAction}>
                         <input
                           type="hidden"
