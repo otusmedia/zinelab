@@ -110,29 +110,56 @@ type MlAttrPayload = {
   value_name?: string;
 };
 
-async function discoverCategory(accessToken: string, title: string) {
-  const t = title.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "");
-  const isSunglasses = t.includes("oculos") && t.includes("sol");
+type DiscoveredCategory = {
+  category_id: string;
+  category_name?: string;
+  domain_id?: string;
+  domain_name?: string;
+  attributes?: Array<{
+    id: string;
+    value_id?: string;
+    value_name?: string;
+  }>;
+};
 
-  // Hard preference for sunglasses — avoids cycling glasses category MLB48191
-  if (isSunglasses) {
-    return {
-      category_id: "MLB8378",
-      category_name: "De Sol",
-      domain_id: "MLB-SUNGLASSES",
-      domain_name: "Óculos de sol",
-      attributes: [] as Array<{
-        id: string;
-        value_id?: string;
-        value_name?: string;
-      }>,
-    };
+function normalizeTitle(title: string) {
+  return title
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+const SUNGLASSES_CATEGORY: DiscoveredCategory = {
+  category_id: "MLB8378",
+  category_name: "De Sol",
+  domain_id: "MLB-SUNGLASSES",
+  domain_name: "Óculos de sol",
+  attributes: [],
+};
+
+function looksLikeSunglasses(title: string) {
+  const t = normalizeTitle(title);
+  if (t.includes("sunglasses") || t.includes("oculos de sol")) return true;
+  if (t.includes("oculos") && (t.includes("sol") || t.includes("sun"))) {
+    return true;
   }
+  // brand-heavy titles still map to sunglasses for this seller
+  if (/(ray-?ban|oakley|persol|prada|gucci)/.test(t) && t.includes("oculos")) {
+    return true;
+  }
+  return false;
+}
 
-  const query = title;
+async function searchDomainDiscovery(
+  accessToken: string,
+  query: string,
+): Promise<DiscoveredCategory[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+
   const url = new URL(`${ML_API}/sites/MLB/domain_discovery/search`);
   url.searchParams.set("limit", "8");
-  url.searchParams.set("q", query);
+  url.searchParams.set("q", q);
 
   const res = await fetch(url, {
     headers: {
@@ -144,22 +171,15 @@ async function discoverCategory(accessToken: string, title: string) {
     throw new Error(`domain_discovery falhou: ${res.status}`);
   }
 
-  const data = (await res.json()) as Array<{
-    category_id: string;
-    category_name?: string;
-    domain_id?: string;
-    domain_name?: string;
-    attributes?: Array<{
-      id: string;
-      value_id?: string;
-      value_name?: string;
-    }>;
-  }>;
+  const data = (await res.json()) as DiscoveredCategory[];
+  return Array.isArray(data) ? data : [];
+}
 
-  if (!data?.length) {
-    throw new Error("ML não encontrou categoria para este título");
-  }
-
+function pickBestCategory(
+  data: DiscoveredCategory[],
+  title: string,
+): DiscoveredCategory {
+  const t = normalizeTitle(title);
   const scored = data.map((item, index) => {
     const name =
       `${item.category_name ?? ""} ${item.domain_name ?? ""} ${item.domain_id ?? ""}`.toLowerCase();
@@ -167,11 +187,56 @@ async function discoverCategory(accessToken: string, title: string) {
     if (item.domain_id === "MLB-SUNGLASSES") score += 100;
     if (item.category_id === "MLB8378") score += 80;
     if (name.includes("ciclismo")) score -= 80;
+    if (t.includes("sol") && name.includes("sol")) score += 40;
     return { item, score };
   });
-
   scored.sort((a, b) => b.score - a.score);
   return scored[0].item;
+}
+
+async function discoverCategory(
+  accessToken: string,
+  title: string,
+  preferredCategoryId?: string | null,
+) {
+  // Hard preference for sunglasses — avoids cycling glasses category MLB48191
+  if (looksLikeSunglasses(title) || preferredCategoryId === "MLB8378") {
+    return SUNGLASSES_CATEGORY;
+  }
+
+  if (preferredCategoryId) {
+    return {
+      category_id: preferredCategoryId,
+      category_name: "Categoria anterior",
+      attributes: [],
+    };
+  }
+
+  const cleaned = title
+    .replace(/\b(teste|test|default|padrao|padrão|produto)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const queries = [
+    title,
+    cleaned,
+    cleaned.length >= 3 ? `óculos de sol ${cleaned}` : "",
+    "óculos de sol",
+  ].filter((q, i, arr) => q.length >= 2 && arr.indexOf(q) === i);
+
+  for (const query of queries) {
+    const data = await searchDomainDiscovery(accessToken, query);
+    if (data.length) return pickBestCategory(data, title);
+  }
+
+  // Eyewear seller fallback when ML returns nothing for weak titles
+  if (normalizeTitle(title).includes("oculos") || !cleaned) {
+    return SUNGLASSES_CATEGORY;
+  }
+
+  throw new Error(
+    `ML não encontrou categoria para este título: "${title}". Inclua palavras como "óculos de sol" no nome do produto.`,
+  );
 }
 
 function buildFamilyName(title: string) {
@@ -387,10 +452,16 @@ export async function publishMercadoLivreItem(params: {
   pictureUrls?: string[];
   /** gold_special = Clássico, gold_pro = Premium */
   listingTypeId?: "gold_special" | "gold_pro";
+  /** Reuse category from a previous successful listing when possible */
+  preferredCategoryId?: string | null;
 }) {
   const title = params.title.slice(0, 60);
   const listingTypeId = params.listingTypeId ?? "gold_special";
-  const discovered = await discoverCategory(params.accessToken, title);
+  const discovered = await discoverCategory(
+    params.accessToken,
+    title,
+    params.preferredCategoryId,
+  );
   const categoryId = discovered.category_id;
   const attrDefs = await fetchCategoryAttributes(
     params.accessToken,

@@ -193,19 +193,21 @@ export async function processSyncJob(jobId: string) {
         );
       }
 
-      const variant = listing.product_variants as unknown as {
-        price: number;
-        name: string | null;
-      } | null;
-      const product = listing.products as unknown as {
-        id: string;
-        name: string;
-        description: string | null;
-      } | null;
+      const variantRaw = listing.product_variants as unknown;
+      const variant = (
+        Array.isArray(variantRaw) ? variantRaw[0] : variantRaw
+      ) as { price: number; name: string | null } | null;
+      const productRaw = listing.products as unknown;
+      const product = (
+        Array.isArray(productRaw) ? productRaw[0] : productRaw
+      ) as { id: string; name: string; description: string | null } | null;
       const title =
         listing.title_override ||
-        `${product?.name ?? "Produto"} ${variant?.name ?? ""}`.trim();
+        `${product?.name ?? "óculos de sol"} ${variant?.name ?? ""}`.trim();
       const price = Number(listing.price_override ?? variant?.price ?? 0);
+      const preferredCategoryId =
+        (listing.metadata as { category_id?: string } | null)?.category_id ??
+        null;
 
       const { data: images } = product?.id
         ? await admin
@@ -278,6 +280,7 @@ export async function processSyncJob(jobId: string) {
           description: product?.description,
           pictureUrls,
           listingTypeId,
+          preferredCategoryId,
         });
       } else {
         // Same type + already published: keep MLB id (type is not editable).
