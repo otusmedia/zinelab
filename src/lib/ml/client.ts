@@ -572,10 +572,95 @@ export async function publishMercadoLivreItem(params: {
     }).catch(() => null);
   }
 
+  if (!json.id) {
+    throw new Error(
+      `ML publish ok sem id de item (${categoryId}). Resposta: ${text.slice(0, 300)}`,
+    );
+  }
+
   return { ...json, category_id: categoryId };
 }
 
-/** Pause an existing item (used when recreating with a different listing type). */
+/** Change Classic ↔ Premium via official endpoint (PUT listing_type_id is rejected). */
+export async function changeMercadoLivreListingType(params: {
+  accessToken: string;
+  itemId: string;
+  listingTypeId: "gold_special" | "gold_pro";
+}) {
+  const res = await fetch(`${ML_API}/items/${params.itemId}/listing_type`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ id: params.listingTypeId }),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `ML listing_type (${params.itemId} → ${params.listingTypeId}): ${formatMlError(res.status, text)}`,
+    );
+  }
+  try {
+    return JSON.parse(text) as {
+      id?: string;
+      permalink?: string;
+      listing_type_id?: string;
+      status?: string;
+    };
+  } catch {
+    return { id: params.itemId, listing_type_id: params.listingTypeId };
+  }
+}
+
+export async function fetchMercadoLivreItem(params: {
+  accessToken: string;
+  itemId: string;
+}) {
+  const res = await fetch(`${ML_API}/items/${params.itemId}`, {
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      Accept: "application/json",
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `ML get item (${params.itemId}): ${formatMlError(res.status, text)}`,
+    );
+  }
+  return JSON.parse(text) as {
+    id: string;
+    permalink?: string;
+    listing_type_id?: string;
+    status?: string;
+    category_id?: string;
+  };
+}
+
+/** Re-activate a paused item after type change / republish. */
+export async function activateMercadoLivreItem(params: {
+  accessToken: string;
+  itemId: string;
+}) {
+  const res = await fetch(`${ML_API}/items/${params.itemId}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ status: "active" }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    return { ok: false as const, error: formatMlError(res.status, text) };
+  }
+  return { ok: true as const };
+}
+
+/** Pause an existing item (optional cleanup). */
 export async function pauseMercadoLivreItem(params: {
   accessToken: string;
   itemId: string;
@@ -591,7 +676,6 @@ export async function pauseMercadoLivreItem(params: {
   });
   if (!res.ok) {
     const text = await res.text();
-    // Non-fatal: old ad may remain active if pause fails
     return { ok: false as const, error: formatMlError(res.status, text) };
   }
   return { ok: true as const };

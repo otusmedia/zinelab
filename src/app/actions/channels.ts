@@ -7,9 +7,11 @@ import { createServiceClient } from "@/lib/supabase/admin";
 import { requireOrganization } from "@/lib/tenancy";
 import {
   ML_PKCE_COOKIE,
+  activateMercadoLivreItem,
   buildMercadoLivreAuthUrl,
+  changeMercadoLivreListingType,
   createPkcePair,
-  pauseMercadoLivreItem,
+  fetchMercadoLivreItem,
   publishMercadoLivreItem,
 } from "@/lib/ml/client";
 
@@ -231,18 +233,21 @@ export async function processSyncJob(jobId: string) {
         (job.payload as { listing_type_id?: string } | null)
           ?.listing_type_id === "gold_pro"
           ? "gold_pro"
-          : (listing.metadata as { listing_type_id?: string } | null)
-                ?.listing_type_id === "gold_pro"
-            ? "gold_pro"
-            : "gold_special";
+          : "gold_special";
 
-      // ML does not allow changing listing_type_id on an existing item.
+      const meta =
+        typeof listing.metadata === "object" && listing.metadata
+          ? (listing.metadata as Record<string, unknown>)
+          : {};
+
+      // published_listing_type_id = last type confirmed on ML.
+      // Do NOT use metadata.listing_type_id here: queuePublish overwrites it
+      // before the job runs, which falsely skipped Premium upgrades.
+      const publishedTypeRaw = meta.published_listing_type_id;
       const previousType =
-        (listing.metadata as { listing_type_id?: string } | null)
-          ?.listing_type_id === "gold_pro"
+        publishedTypeRaw === "gold_pro"
           ? "gold_pro"
-          : (listing.metadata as { listing_type_id?: string } | null)
-                ?.listing_type_id === "gold_special"
+          : publishedTypeRaw === "gold_special"
             ? "gold_special"
             : listing.external_id
               ? "gold_special"
@@ -258,20 +263,11 @@ export async function processSyncJob(jobId: string) {
         id?: string;
         permalink?: string;
         category_id?: string;
+        listing_type_id?: string;
+        status?: string;
       };
-      let pausedPrevious: string | null = null;
 
-      if (!previousExternalId || typeChanged) {
-        if (typeChanged && previousExternalId) {
-          const paused = await pauseMercadoLivreItem({
-            accessToken: secret.access_token,
-            itemId: previousExternalId,
-          });
-          pausedPrevious = paused.ok
-            ? previousExternalId
-            : `${previousExternalId} (pause falhou: ${paused.error})`;
-        }
-
+      if (!previousExternalId) {
         result = await publishMercadoLivreItem({
           accessToken: secret.access_token,
           title,
@@ -282,39 +278,84 @@ export async function processSyncJob(jobId: string) {
           listingTypeId,
           preferredCategoryId,
         });
-      } else {
-        // Same type + already published: keep MLB id (type is not editable).
+      } else if (typeChanged) {
+        // Official upgrade/downgrade — keeps the same MLB id visible on ML.
+        result = await changeMercadoLivreListingType({
+          accessToken: secret.access_token,
+          itemId: previousExternalId,
+          listingTypeId,
+        });
+        const activated = await activateMercadoLivreItem({
+          accessToken: secret.access_token,
+          itemId: previousExternalId,
+        });
+        if (!activated.ok) {
+          // Non-fatal if already active; still refresh item below.
+        }
+        const fresh = await fetchMercadoLivreItem({
+          accessToken: secret.access_token,
+          itemId: previousExternalId,
+        });
         result = {
-          id: previousExternalId,
-          permalink:
-            (listing.metadata as { permalink?: string } | null)?.permalink ??
-            undefined,
-          category_id:
-            (listing.metadata as { category_id?: string } | null)?.category_id ??
-            undefined,
+          id: fresh.id,
+          permalink: fresh.permalink,
+          category_id: fresh.category_id ?? preferredCategoryId ?? undefined,
+          listing_type_id: fresh.listing_type_id,
+          status: fresh.status,
         };
+        if (fresh.listing_type_id && fresh.listing_type_id !== listingTypeId) {
+          throw new Error(
+            `ML não aplicou Premium/Clássico (ficou ${fresh.listing_type_id}, status ${fresh.status ?? "?"}).`,
+          );
+        }
+        if (fresh.status && !["active", "not_yet_active"].includes(fresh.status)) {
+          throw new Error(
+            `Anúncio ${fresh.id} está ${fresh.status} no ML após mudança de tipo. Verifique no painel do Mercado Livre.`,
+          );
+        }
+      } else {
+        // Same type: refresh status from ML; re-activate if paused.
+        const fresh = await fetchMercadoLivreItem({
+          accessToken: secret.access_token,
+          itemId: previousExternalId,
+        });
+        if (fresh.status === "paused") {
+          await activateMercadoLivreItem({
+            accessToken: secret.access_token,
+            itemId: previousExternalId,
+          });
+        }
+        const again = await fetchMercadoLivreItem({
+          accessToken: secret.access_token,
+          itemId: previousExternalId,
+        });
+        result = {
+          id: again.id,
+          permalink: again.permalink,
+          category_id: again.category_id ?? preferredCategoryId ?? undefined,
+          listing_type_id: again.listing_type_id,
+          status: again.status,
+        };
+      }
+
+      if (!result.id) {
+        throw new Error("Publicação ML sem external id — não marcamos como published.");
       }
 
       await admin
         .from("channel_listings")
         .update({
           status: "published",
-          external_id: result.id ?? previousExternalId,
+          external_id: result.id,
           last_sync_at: new Date().toISOString(),
           last_error: null,
           metadata: {
-            ...(typeof listing.metadata === "object" && listing.metadata
-              ? listing.metadata
-              : {}),
-            category_id: result.category_id ?? null,
-            permalink: result.permalink ?? null,
+            ...meta,
+            category_id: result.category_id ?? meta.category_id ?? null,
+            permalink: result.permalink ?? meta.permalink ?? null,
             listing_type_id: listingTypeId,
-            ...(typeChanged
-              ? {
-                  previous_external_id: previousExternalId,
-                  previous_paused: pausedPrevious,
-                }
-              : {}),
+            published_listing_type_id: listingTypeId,
+            ml_status: result.status ?? null,
           },
           updated_at: new Date().toISOString(),
         })

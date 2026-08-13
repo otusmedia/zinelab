@@ -138,8 +138,7 @@ export default async function ProductDetailPage({
               <option value="gold_pro">Premium</option>
             </select>
             <p className="muted" style={{ marginTop: 6 }}>
-              O ML não altera o tipo de um anúncio já publicado. Trocar
-              Clássico/Premium cria um anúncio novo e pausa o anterior.
+              Trocar Clássico/Premium atualiza o mesmo anúncio no ML (parcelamento).
             </p>
           </div>
           <button type="submit" className="primary">
@@ -166,15 +165,23 @@ export default async function ProductDetailPage({
             } | null;
             const meta = l.metadata as {
               listing_type_id?: string;
+              published_listing_type_id?: string;
               permalink?: string;
+              ml_status?: string;
             } | null;
             const tipo =
-              meta?.listing_type_id === "gold_pro" ? "Premium" : "Clássico";
+              (meta?.published_listing_type_id ?? meta?.listing_type_id) ===
+              "gold_pro"
+                ? "Premium"
+                : "Clássico";
             return (
               <tr key={l.id}>
                 <td>{conn?.sales_channels?.name ?? "—"}</td>
                 <td>{tipo}</td>
-                <td>{l.status}</td>
+                <td>
+                  {l.status}
+                  {meta?.ml_status ? ` · ML:${meta.ml_status}` : ""}
+                </td>
                 <td>
                   {l.external_id ? (
                     meta?.permalink ? (
