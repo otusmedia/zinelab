@@ -38,14 +38,16 @@ export async function updateSession(request: NextRequest) {
     path.startsWith("/signup") ||
     path.startsWith("/auth");
   const isJoinRoute = path.startsWith("/join/");
-  const isPublicApi = path.startsWith(
-    "/api/integrations/mercado-livre/callback",
-  );
+  const isStorefront = path.startsWith("/s/");
+  const isPublicApi =
+    path.startsWith("/api/integrations/mercado-livre/callback") ||
+    path.startsWith("/api/integrations/mercado-livre/notifications");
 
   if (
     !user &&
     !isAuthRoute &&
     !isJoinRoute &&
+    !isStorefront &&
     !isPublicApi &&
     path !== "/"
   ) {

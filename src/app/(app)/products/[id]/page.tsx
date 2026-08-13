@@ -6,6 +6,11 @@ import {
   deleteProductImageAction,
   uploadProductImageAction,
 } from "@/app/actions/products";
+import {
+  publishOwnStoreAction,
+  unpublishOwnStoreAction,
+} from "@/app/actions/store";
+import { getOwnStoreConnection } from "@/lib/store/catalog";
 
 export default async function ProductDetailPage({
   params,
@@ -17,6 +22,8 @@ export default async function ProductDetailPage({
     published?: string;
     updated?: string;
     image?: string;
+    store_published?: string;
+    store_paused?: string;
   }>;
 }) {
   const { id } = await params;
@@ -41,6 +48,8 @@ export default async function ProductDetailPage({
     }>
   ).slice().sort((a, b) => a.position - b.position);
 
+  const ownStoreConnection = await getOwnStoreConnection(organization.id);
+
   const { data: connections } = await supabase
     .from("channel_connections")
     .select("id, status, sales_channels(code, name)")
@@ -49,7 +58,7 @@ export default async function ProductDetailPage({
 
   const { data: listings } = await supabase
     .from("channel_listings")
-    .select("*, channel_connections(sales_channels(name))")
+    .select("*, channel_connections(sales_channels(code, name))")
     .eq("product_id", product.id)
     .eq("organization_id", organization.id);
 
@@ -58,9 +67,24 @@ export default async function ProductDetailPage({
     return ch?.code === "mercado_livre";
   });
 
-  const hasPublishedMl = (listings ?? []).some(
-    (l) => l.external_id && (l.status === "published" || l.status === "paused"),
-  );
+  const hasPublishedMl = (listings ?? []).some((l) => {
+    const conn = l.channel_connections as unknown as {
+      sales_channels: { code: string };
+    } | null;
+    return (
+      conn?.sales_channels?.code === "mercado_livre" &&
+      l.external_id &&
+      (l.status === "published" || l.status === "paused")
+    );
+  });
+
+  const storeListing = (listings ?? []).find((l) => {
+    const conn = l.channel_connections as unknown as {
+      sales_channels: { code: string };
+    } | null;
+    return conn?.sales_channels?.code === "own_store";
+  });
+  const storePublished = storeListing?.status === "published";
 
   return (
     <div>
@@ -89,6 +113,23 @@ export default async function ProductDetailPage({
             ? `${query.image} imagens adicionadas.`
             : "Imagem adicionada."}{" "}
           Ao atualizar/publicar no ML, elas serão enviadas.
+        </div>
+      ) : null}
+      {query.store_published ? (
+        <div className="panel" style={{ marginTop: 12 }}>
+          Publicado na loja própria.{" "}
+          <a
+            href={`/s/${organization.slug}/p/${product.id}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Ver na vitrine
+          </a>
+        </div>
+      ) : null}
+      {query.store_paused ? (
+        <div className="panel" style={{ marginTop: 12 }}>
+          Removido da vitrine da loja.
         </div>
       ) : null}
 
@@ -178,6 +219,60 @@ export default async function ProductDetailPage({
         </tbody>
       </table>
 
+      <h2 style={{ marginTop: 24 }}>Loja própria</h2>
+      <p className="muted">
+        Publica na vitrine pública{" "}
+        <code>/s/{organization.slug}</code> usando o estoque atual.
+      </p>
+      {!ownStoreConnection || ownStoreConnection.status !== "connected" ? (
+        <p>
+          Loja ainda não ativada. <Link href="/store">Ativar loja</Link>
+        </p>
+      ) : storePublished && storeListing ? (
+        <div className="panel">
+          <p>
+            Status: publicado ·{" "}
+            <a
+              href={`/s/${organization.slug}/p/${product.id}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Abrir na loja
+            </a>
+          </p>
+          <form action={unpublishOwnStoreAction}>
+            <input type="hidden" name="listing_id" value={storeListing.id} />
+            <input type="hidden" name="product_id" value={product.id} />
+            <button type="submit">Remover da loja</button>
+          </form>
+        </div>
+      ) : (
+        <form action={publishOwnStoreAction} className="panel">
+          <input type="hidden" name="product_id" value={product.id} />
+          <div className="field">
+            <label className="label" htmlFor="store_variant_id">
+              Variante
+            </label>
+            <select
+              id="store_variant_id"
+              name="product_variant_id"
+              required
+            >
+              {(product.product_variants ?? []).map(
+                (v: { id: string; sku: string; name: string | null }) => (
+                  <option key={v.id} value={v.id}>
+                    {v.sku} — {v.name}
+                  </option>
+                ),
+              )}
+            </select>
+          </div>
+          <button type="submit" className="primary">
+            Publicar na loja
+          </button>
+        </form>
+      )}
+
       <h2 style={{ marginTop: 24 }}>Mercado Livre</h2>
       <p className="muted">
         Sem MLB: publica. Com MLB: atualiza preço, estoque e fotos (ou muda
@@ -257,17 +352,22 @@ export default async function ProductDetailPage({
         <tbody>
           {(listings ?? []).map((l) => {
             const conn = l.channel_connections as unknown as {
-              sales_channels: { name: string };
+              sales_channels: { code?: string; name: string };
             } | null;
             const meta = l.metadata as {
               listing_type_id?: string;
               published_listing_type_id?: string;
               permalink?: string;
               ml_status?: string;
+              channel?: string;
             } | null;
-            const tipo =
-              (meta?.published_listing_type_id ?? meta?.listing_type_id) ===
-              "gold_pro"
+            const isStore =
+              conn?.sales_channels?.code === "own_store" ||
+              meta?.channel === "own_store";
+            const tipo = isStore
+              ? "Loja"
+              : (meta?.published_listing_type_id ?? meta?.listing_type_id) ===
+                  "gold_pro"
                 ? "Premium"
                 : "Clássico";
             return (

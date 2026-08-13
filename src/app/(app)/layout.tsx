@@ -11,7 +11,7 @@ const NAV = [
   { href: "/team", label: "Equipe" },
   { href: "/integrations", label: "Integrações" },
   { href: "/channels", label: "Anúncios" },
-  { href: "/store", label: "Loja (em breve)", stub: true },
+  { href: "/store", label: "Loja" },
   { href: "/marketing", label: "Marketing (em breve)", stub: true },
   { href: "/support", label: "Suporte (em breve)", stub: true },
   { href: "/ads", label: "Ads (em breve)", stub: true },
