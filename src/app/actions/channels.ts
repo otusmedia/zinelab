@@ -10,6 +10,7 @@ import {
   buildMercadoLivreAuthUrl,
   createPkcePair,
   publishMercadoLivreItem,
+  updateMercadoLivreListingType,
 } from "@/lib/ml/client";
 
 export async function startMercadoLivreOAuth(_formData?: FormData) {
@@ -48,6 +49,9 @@ export async function queuePublishListingAction(formData: FormData) {
   const productId = String(formData.get("product_id") ?? "");
   const variantId = String(formData.get("product_variant_id") ?? "");
   const connectionId = String(formData.get("channel_connection_id") ?? "");
+  const listingTypeRaw = String(formData.get("listing_type_id") ?? "gold_special");
+  const listingTypeId =
+    listingTypeRaw === "gold_pro" ? "gold_pro" : "gold_special";
 
   const fail = (message: string) => {
     redirect(
@@ -72,6 +76,12 @@ export async function queuePublishListingAction(formData: FormData) {
       .update({
         status: "pending",
         last_error: null,
+        metadata: {
+          ...(typeof listing.metadata === "object" && listing.metadata
+            ? listing.metadata
+            : {}),
+          listing_type_id: listingTypeId,
+        },
         updated_at: new Date().toISOString(),
       })
       .eq("id", listing.id)
@@ -91,6 +101,7 @@ export async function queuePublishListingAction(formData: FormData) {
         product_id: productId,
         product_variant_id: variantId,
         status: "pending",
+        metadata: { listing_type_id: listingTypeId },
       })
       .select("*")
       .single();
@@ -114,7 +125,11 @@ export async function queuePublishListingAction(formData: FormData) {
       entity_type: "channel_listing",
       entity_id: listing.id,
       status: "queued",
-      payload: { product_id: productId, product_variant_id: variantId },
+      payload: {
+        product_id: productId,
+        product_variant_id: variantId,
+        listing_type_id: listingTypeId,
+      },
     })
     .select("*")
     .single();
@@ -210,25 +225,53 @@ export async function processSyncJob(jobId: string) {
         )
         .filter(Boolean);
 
-      const result = await publishMercadoLivreItem({
-        accessToken: secret.access_token,
-        title,
-        price,
-        availableQuantity: 1,
-        description: product?.description,
-        pictureUrls,
-      });
+      const listingTypeId =
+        (job.payload as { listing_type_id?: string } | null)
+          ?.listing_type_id === "gold_pro"
+          ? "gold_pro"
+          : (listing.metadata as { listing_type_id?: string } | null)
+                ?.listing_type_id === "gold_pro"
+            ? "gold_pro"
+            : "gold_special";
+
+      let result: {
+        id?: string;
+        permalink?: string;
+        category_id?: string;
+      };
+
+      if (listing.external_id) {
+        result = await updateMercadoLivreListingType({
+          accessToken: secret.access_token,
+          itemId: listing.external_id,
+          listingTypeId,
+        });
+      } else {
+        result = await publishMercadoLivreItem({
+          accessToken: secret.access_token,
+          title,
+          price,
+          availableQuantity: 1,
+          description: product?.description,
+          pictureUrls,
+          listingTypeId,
+        });
+      }
 
       await admin
         .from("channel_listings")
         .update({
           status: "published",
-          external_id: result.id ?? null,
+          external_id: result.id ?? listing.external_id ?? null,
           last_sync_at: new Date().toISOString(),
           last_error: null,
           metadata: {
+            ...(typeof listing.metadata === "object" && listing.metadata
+              ? listing.metadata
+              : {}),
             category_id: result.category_id ?? null,
             permalink: result.permalink ?? null,
+            listing_type_id: listingTypeId,
           },
           updated_at: new Date().toISOString(),
         })

@@ -129,6 +129,15 @@ export default async function ProductDetailPage({
               })}
             </select>
           </div>
+          <div className="field">
+            <label className="label" htmlFor="listing_type_id">
+              Tipo de anúncio
+            </label>
+            <select id="listing_type_id" name="listing_type_id" defaultValue="gold_special">
+              <option value="gold_special">Clássico</option>
+              <option value="gold_pro">Premium</option>
+            </select>
+          </div>
           <button type="submit" className="primary">
             Publicar no Mercado Livre
           </button>
@@ -140,6 +149,7 @@ export default async function ProductDetailPage({
         <thead>
           <tr>
             <th>Canal</th>
+            <th>Tipo</th>
             <th>Status</th>
             <th>External ID</th>
             <th>Erro</th>
@@ -150,11 +160,30 @@ export default async function ProductDetailPage({
             const conn = l.channel_connections as unknown as {
               sales_channels: { name: string };
             } | null;
+            const meta = l.metadata as {
+              listing_type_id?: string;
+              permalink?: string;
+            } | null;
+            const tipo =
+              meta?.listing_type_id === "gold_pro" ? "Premium" : "Clássico";
             return (
               <tr key={l.id}>
                 <td>{conn?.sales_channels?.name ?? "—"}</td>
+                <td>{tipo}</td>
                 <td>{l.status}</td>
-                <td>{l.external_id ?? "—"}</td>
+                <td>
+                  {l.external_id ? (
+                    meta?.permalink ? (
+                      <a href={meta.permalink} target="_blank" rel="noreferrer">
+                        {l.external_id}
+                      </a>
+                    ) : (
+                      l.external_id
+                    )
+                  ) : (
+                    "—"
+                  )}
+                </td>
                 <td>{l.last_error ?? "—"}</td>
               </tr>
             );

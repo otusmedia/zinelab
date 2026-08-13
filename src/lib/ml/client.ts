@@ -385,8 +385,11 @@ export async function publishMercadoLivreItem(params: {
   availableQuantity: number;
   description?: string | null;
   pictureUrls?: string[];
+  /** gold_special = Clássico, gold_pro = Premium */
+  listingTypeId?: "gold_special" | "gold_pro";
 }) {
   const title = params.title.slice(0, 60);
+  const listingTypeId = params.listingTypeId ?? "gold_special";
   const discovered = await discoverCategory(params.accessToken, title);
   const categoryId = discovered.category_id;
   const attrDefs = await fetchCategoryAttributes(
@@ -417,7 +420,7 @@ export async function publishMercadoLivreItem(params: {
     available_quantity: Math.max(1, params.availableQuantity),
     buying_mode: "buy_it_now",
     condition: "new",
-    listing_type_id: "gold_special",
+    listing_type_id: listingTypeId,
     channels: ["marketplace"],
     pictures,
     attributes,
@@ -499,4 +502,31 @@ export async function publishMercadoLivreItem(params: {
   }
 
   return { ...json, category_id: categoryId };
+}
+
+export async function updateMercadoLivreListingType(params: {
+  accessToken: string;
+  itemId: string;
+  listingTypeId: "gold_special" | "gold_pro";
+}) {
+  const res = await fetch(`${ML_API}/items/${params.itemId}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${params.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ listing_type_id: params.listingTypeId }),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `ML update tipo (${params.itemId}): ${formatMlError(res.status, text)}`,
+    );
+  }
+  try {
+    return JSON.parse(text) as { id?: string; permalink?: string };
+  } catch {
+    return { id: params.itemId };
+  }
 }
