@@ -1,36 +1,40 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Zine Lab V1
 
-## Getting Started
+SaaS multi-tenant de gestão de produtos, estoque, clientes, pedidos e canais (Mercado Livre), com UI wireframe preto e branco.
 
-First, run the development server:
+## Stack
+
+- Next.js (App Router) em `zine-lab/`
+- Supabase (Auth, Postgres, RLS, Storage opcional)
+
+## Princípios
+
+- `products` = verdade interna
+- `channel_listings` = representação em canal externo
+- Tokens OAuth em `channel_connection_secrets` (somente `service_role` / server)
+- `customers.external_ids` jsonb é **V1**; evoluir para `customer_external_identities` depois
+
+## Setup
+
+1. Crie um projeto no [Supabase](https://supabase.com).
+2. Copie `.env.example` → `.env.local` e preencha URL/keys.
+3. Aplique as migrations em `supabase/migrations/` (SQL Editor ou `supabase db push`).
+4. Instale e rode:
 
 ```bash
+cd zine-lab
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+5. (Opcional) Mercado Livre: crie app em https://developers.mercadolivre.com.br/ e preencha `ML_APP_ID`, `ML_CLIENT_SECRET`, `ML_REDIRECT_URI`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Isolamento
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Ver `supabase/tests/isolation.sql`. Meta: Org A nunca lê/escreve dados da Org B; secrets nunca voltam no client.
 
-## Learn More
+## Escopo V1
 
-To learn more about Next.js, take a look at the following resources:
+Auth + organization + store default · produtos/variantes/estoque · clientes · pedidos com snapshot · OAuth ML · listings + sync_jobs · dashboard.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Fora: loja builder, marketing, suporte IA, Ads, billing.

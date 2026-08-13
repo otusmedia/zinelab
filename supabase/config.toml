@@ -1,0 +1,9 @@
+# Minimal Supabase CLI project config for local migrations.
+# Run: supabase link / supabase db push (after creating a project)
+
+project_id = "zine-lab"
+
+[api]
+enabled = true
+schemas = ["public"]
+extra_search_path = ["public"]
