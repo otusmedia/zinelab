@@ -85,13 +85,17 @@ export default async function ProductDetailPage({
       ) : null}
       {query.image ? (
         <div className="panel" style={{ marginTop: 12 }}>
-          Imagem adicionada. Ao atualizar/publicar no ML, ela será enviada.
+          {Number(query.image) > 1
+            ? `${query.image} imagens adicionadas.`
+            : "Imagem adicionada."}{" "}
+          Ao atualizar/publicar no ML, elas serão enviadas.
         </div>
       ) : null}
 
       <h2>Imagens</h2>
       <p className="muted">
-        JPG/PNG/WEBP até 5MB. Usadas na publicação no Mercado Livre.
+        JPG/PNG/WEBP até 5MB cada. Dá para selecionar várias de uma vez (máx.
+        12). Usadas na publicação no Mercado Livre.
       </p>
       {images.length === 0 ? (
         <p className="muted">Nenhuma imagem ainda — o ML usará um placeholder.</p>
@@ -136,18 +140,19 @@ export default async function ProductDetailPage({
         <input type="hidden" name="product_id" value={product.id} />
         <div className="field">
           <label className="label" htmlFor="file">
-            Adicionar imagem
+            Adicionar imagens
           </label>
           <input
             id="file"
             name="file"
             type="file"
             accept="image/jpeg,image/png,image/webp,image/gif"
+            multiple
             required
           />
         </div>
         <button type="submit" className="primary">
-          Enviar imagem
+          Enviar imagens
         </button>
       </form>
 

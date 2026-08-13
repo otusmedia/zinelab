@@ -148,24 +148,17 @@ export async function updateInventoryAction(formData: FormData) {
 export async function uploadProductImageAction(formData: FormData) {
   const { supabase, organization } = await requireOrganization();
   const productId = String(formData.get("product_id") ?? "");
-  const file = formData.get("file");
+  const files = formData
+    .getAll("file")
+    .filter((f): f is File => f instanceof File && f.size > 0);
 
   const fail = (message: string) => {
     redirect(`/products/${productId}?error=${encodeURIComponent(message)}`);
   };
 
   if (!productId) fail("Produto inválido");
-  if (!(file instanceof File) || file.size === 0) {
-    fail("Selecione uma imagem");
-  }
-
-  const image = file as File;
-  if (!ALLOWED_TYPES.has(image.type)) {
-    fail("Use JPG, PNG, WEBP ou GIF");
-  }
-  if (image.size > MAX_IMAGE_BYTES) {
-    fail("Imagem maior que 5MB");
-  }
+  if (files.length === 0) fail("Selecione pelo menos uma imagem");
+  if (files.length > 12) fail("Envie no máximo 12 imagens por vez");
 
   const { data: product } = await supabase
     .from("products")
@@ -181,51 +174,72 @@ export async function uploadProductImageAction(formData: FormData) {
     .select("id", { count: "exact", head: true })
     .eq("product_id", productId);
 
-  const ext =
-    image.type === "image/png"
-      ? "png"
-      : image.type === "image/webp"
-        ? "webp"
-        : image.type === "image/gif"
-          ? "gif"
-          : "jpg";
-  const objectPath = `${organization.id}/${productId}/${crypto.randomUUID()}.${ext}`;
-
+  let position = count ?? 0;
   const admin = createServiceClient();
-  const bytes = Buffer.from(await image.arrayBuffer());
-  const { error: uploadError } = await admin.storage
-    .from(IMAGE_BUCKET)
-    .upload(objectPath, bytes, {
-      contentType: image.type,
-      upsert: false,
-    });
+  const uploadedPaths: string[] = [];
+  let uploaded = 0;
 
-  if (uploadError) {
-    fail(
-      `Upload falhou: ${uploadError.message}. Aplique a migration do bucket product-images no Supabase.`,
-    );
-  }
+  try {
+    for (const image of files) {
+      if (!ALLOWED_TYPES.has(image.type)) {
+        throw new Error(`Tipo inválido em ${image.name}. Use JPG, PNG, WEBP ou GIF.`);
+      }
+      if (image.size > MAX_IMAGE_BYTES) {
+        throw new Error(`${image.name} é maior que 5MB`);
+      }
 
-  const { data: publicData } = admin.storage
-    .from(IMAGE_BUCKET)
-    .getPublicUrl(objectPath);
-  const publicUrl = publicData.publicUrl;
+      const ext =
+        image.type === "image/png"
+          ? "png"
+          : image.type === "image/webp"
+            ? "webp"
+            : image.type === "image/gif"
+              ? "gif"
+              : "jpg";
+      const objectPath = `${organization.id}/${productId}/${crypto.randomUUID()}.${ext}`;
+      const bytes = Buffer.from(await image.arrayBuffer());
+      const { error: uploadError } = await admin.storage
+        .from(IMAGE_BUCKET)
+        .upload(objectPath, bytes, {
+          contentType: image.type,
+          upsert: false,
+        });
 
-  const { error: insertError } = await supabase.from("product_images").insert({
-    organization_id: organization.id,
-    product_id: productId,
-    storage_path: publicUrl,
-    position: count ?? 0,
-    alt: image.name.slice(0, 120) || null,
-  });
+      if (uploadError) {
+        throw new Error(
+          `Upload falhou (${image.name}): ${uploadError.message}. Aplique a migration do bucket product-images no Supabase.`,
+        );
+      }
+      uploadedPaths.push(objectPath);
 
-  if (insertError) {
-    await admin.storage.from(IMAGE_BUCKET).remove([objectPath]);
-    fail(insertError.message);
+      const { data: publicData } = admin.storage
+        .from(IMAGE_BUCKET)
+        .getPublicUrl(objectPath);
+
+      const { error: insertError } = await supabase.from("product_images").insert({
+        organization_id: organization.id,
+        product_id: productId,
+        storage_path: publicData.publicUrl,
+        position,
+        alt: image.name.slice(0, 120) || null,
+      });
+
+      if (insertError) {
+        throw new Error(insertError.message);
+      }
+
+      position += 1;
+      uploaded += 1;
+    }
+  } catch (err) {
+    if (uploadedPaths.length) {
+      await admin.storage.from(IMAGE_BUCKET).remove(uploadedPaths);
+    }
+    fail(err instanceof Error ? err.message : "Falha no upload");
   }
 
   revalidatePath(`/products/${productId}`);
-  redirect(`/products/${productId}?image=1`);
+  redirect(`/products/${productId}?image=${uploaded}`);
 }
 
 export async function deleteProductImageAction(formData: FormData) {
