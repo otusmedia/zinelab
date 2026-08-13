@@ -20,9 +20,18 @@ export async function signUp(formData: FormData) {
   const password = String(formData.get("password") ?? "");
   const supabase = await createClient();
 
-  const { error } = await supabase.auth.signUp({ email, password });
+  const { data, error } = await supabase.auth.signUp({ email, password });
   if (error) {
-    throw new Error(error.message);
+    redirect(`/signup?error=${encodeURIComponent(error.message)}`);
+  }
+
+  // If email confirmation is enabled, there is no session yet.
+  if (!data.session) {
+    redirect(
+      `/login?message=${encodeURIComponent(
+        "Conta criada. Confirme o email (ou desative confirmação no Supabase) e entre.",
+      )}`,
+    );
   }
 
   redirect("/onboarding");
@@ -35,7 +44,7 @@ export async function signIn(formData: FormData) {
 
   const { error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) {
-    throw new Error(error.message);
+    redirect(`/login?error=${encodeURIComponent(error.message)}`);
   }
 
   redirect("/dashboard");
@@ -50,7 +59,7 @@ export async function signOut() {
 export async function createOrganizationAction(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   if (!name) {
-    throw new Error("Nome obrigatório");
+    redirect(`/onboarding?error=${encodeURIComponent("Nome obrigatório")}`);
   }
 
   const slugBase = slugify(name) || "empresa";
@@ -63,7 +72,7 @@ export async function createOrganizationAction(formData: FormData) {
   });
 
   if (error) {
-    throw new Error(error.message);
+    redirect(`/onboarding?error=${encodeURIComponent(error.message)}`);
   }
 
   const org = Array.isArray(data) ? data[0] : data;

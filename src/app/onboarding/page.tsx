@@ -1,8 +1,13 @@
 import { createOrganizationAction } from "@/app/actions/auth";
 import { requireUser } from "@/lib/tenancy";
 
-export default async function OnboardingPage() {
+export default async function OnboardingPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
   await requireUser();
+  const params = await searchParams;
 
   return (
     <main style={{ maxWidth: 480, margin: "48px auto", padding: 16 }}>
@@ -11,6 +16,13 @@ export default async function OnboardingPage() {
         Cada organização é um tenant isolado. Uma loja padrão será criada
         automaticamente.
       </p>
+
+      {params.error ? (
+        <div className="error" style={{ marginTop: 12 }}>
+          {params.error}
+        </div>
+      ) : null}
+
       <form
         action={createOrganizationAction}
         className="panel"

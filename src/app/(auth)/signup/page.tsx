@@ -1,11 +1,24 @@
 import Link from "next/link";
 import { signUp } from "@/app/actions/auth";
 
-export default function SignupPage() {
+export default async function SignupPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
+  const params = await searchParams;
+
   return (
     <main style={{ maxWidth: 420, margin: "48px auto", padding: 16 }}>
       <h1>Zine Lab</h1>
       <p className="muted">Criar conta</p>
+
+      {params.error ? (
+        <div className="error" style={{ marginTop: 12 }}>
+          {params.error}
+        </div>
+      ) : null}
+
       <form action={signUp} className="panel" style={{ marginTop: 16 }}>
         <div className="field">
           <label className="label" htmlFor="email">
