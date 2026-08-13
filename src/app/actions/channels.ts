@@ -1,17 +1,18 @@
 "use server";
 
+import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createServiceClient } from "@/lib/supabase/admin";
 import { requireOrganization } from "@/lib/tenancy";
 import {
+  ML_PKCE_COOKIE,
   buildMercadoLivreAuthUrl,
+  createPkcePair,
   publishMercadoLivreItem,
 } from "@/lib/ml/client";
 
 export async function startMercadoLivreOAuth(_formData?: FormData) {
-  await requireOrganization();
-
   if (!process.env.ML_APP_ID || !process.env.ML_CLIENT_SECRET) {
     redirect(
       `/integrations?error=${encodeURIComponent(
@@ -21,6 +22,16 @@ export async function startMercadoLivreOAuth(_formData?: FormData) {
   }
 
   const { organization } = await requireOrganization();
+  const { codeVerifier, codeChallenge } = createPkcePair();
+
+  const cookieStore = await cookies();
+  cookieStore.set(ML_PKCE_COOKIE, codeVerifier, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 10,
+  });
 
   const state = Buffer.from(
     JSON.stringify({
@@ -29,7 +40,7 @@ export async function startMercadoLivreOAuth(_formData?: FormData) {
     }),
   ).toString("base64url");
 
-  redirect(buildMercadoLivreAuthUrl(state));
+  redirect(buildMercadoLivreAuthUrl(state, codeChallenge));
 }
 
 export async function queuePublishListingAction(formData: FormData) {

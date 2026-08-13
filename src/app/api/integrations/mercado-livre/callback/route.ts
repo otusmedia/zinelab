@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/admin";
 import {
+  ML_PKCE_COOKIE,
   exchangeMercadoLivreCode,
   fetchMercadoLivreMe,
 } from "@/lib/ml/client";
@@ -13,15 +14,41 @@ export async function GET(request: NextRequest) {
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 
+  const clearPkce = (response: NextResponse) => {
+    response.cookies.set(ML_PKCE_COOKIE, "", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 0,
+    });
+    return response;
+  };
+
   if (oauthError) {
-    return NextResponse.redirect(
-      `${appUrl}/integrations?error=${encodeURIComponent(oauthError)}`,
+    return clearPkce(
+      NextResponse.redirect(
+        `${appUrl}/integrations?error=${encodeURIComponent(oauthError)}`,
+      ),
     );
   }
 
   if (!code || !stateRaw) {
-    return NextResponse.redirect(
-      `${appUrl}/integrations?error=${encodeURIComponent("callback inválido")}`,
+    return clearPkce(
+      NextResponse.redirect(
+        `${appUrl}/integrations?error=${encodeURIComponent("callback inválido")}`,
+      ),
+    );
+  }
+
+  const codeVerifier = request.cookies.get(ML_PKCE_COOKIE)?.value;
+  if (!codeVerifier) {
+    return clearPkce(
+      NextResponse.redirect(
+        `${appUrl}/integrations?error=${encodeURIComponent(
+          "PKCE code_verifier ausente. Clique novamente em Conectar Mercado Livre.",
+        )}`,
+      ),
     );
   }
 
@@ -32,13 +59,15 @@ export async function GET(request: NextRequest) {
     ) as { organizationId: string };
     organizationId = parsed.organizationId;
   } catch {
-    return NextResponse.redirect(
-      `${appUrl}/integrations?error=${encodeURIComponent("state inválido")}`,
+    return clearPkce(
+      NextResponse.redirect(
+        `${appUrl}/integrations?error=${encodeURIComponent("state inválido")}`,
+      ),
     );
   }
 
   try {
-    const token = await exchangeMercadoLivreCode(code);
+    const token = await exchangeMercadoLivreCode(code, codeVerifier);
     const me = await fetchMercadoLivreMe(token.access_token);
     const admin = createServiceClient();
 
@@ -99,11 +128,15 @@ export async function GET(request: NextRequest) {
       throw new Error(secretError.message);
     }
 
-    return NextResponse.redirect(`${appUrl}/integrations?connected=1`);
+    return clearPkce(
+      NextResponse.redirect(`${appUrl}/integrations?connected=1`),
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Erro OAuth ML";
-    return NextResponse.redirect(
-      `${appUrl}/integrations?error=${encodeURIComponent(message)}`,
+    return clearPkce(
+      NextResponse.redirect(
+        `${appUrl}/integrations?error=${encodeURIComponent(message)}`,
+      ),
     );
   }
 }

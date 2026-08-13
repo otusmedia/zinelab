@@ -1,6 +1,10 @@
+import { createHash, randomBytes } from "crypto";
+
 const ML_AUTH_URL = "https://auth.mercadolivre.com.br/authorization";
 const ML_TOKEN_URL = "https://api.mercadolibre.com/oauth/token";
 const ML_API = "https://api.mercadolibre.com";
+
+export const ML_PKCE_COOKIE = "ml_oauth_code_verifier";
 
 export function getMercadoLivreConfig() {
   const appId = process.env.ML_APP_ID;
@@ -12,7 +16,19 @@ export function getMercadoLivreConfig() {
   return { appId, clientSecret, redirectUri };
 }
 
-export function buildMercadoLivreAuthUrl(state: string) {
+/** PKCE: random verifier (43-128 chars) + S256 challenge */
+export function createPkcePair() {
+  const codeVerifier = randomBytes(32).toString("base64url");
+  const codeChallenge = createHash("sha256")
+    .update(codeVerifier)
+    .digest("base64url");
+  return { codeVerifier, codeChallenge };
+}
+
+export function buildMercadoLivreAuthUrl(
+  state: string,
+  codeChallenge: string,
+) {
   const { appId, redirectUri } = getMercadoLivreConfig();
   if (!appId) {
     throw new Error("ML_APP_ID não configurado");
@@ -23,10 +39,15 @@ export function buildMercadoLivreAuthUrl(state: string) {
   url.searchParams.set("client_id", appId);
   url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("state", state);
+  url.searchParams.set("code_challenge", codeChallenge);
+  url.searchParams.set("code_challenge_method", "S256");
   return url.toString();
 }
 
-export async function exchangeMercadoLivreCode(code: string) {
+export async function exchangeMercadoLivreCode(
+  code: string,
+  codeVerifier: string,
+) {
   const { appId, clientSecret, redirectUri } = getMercadoLivreConfig();
   if (!appId || !clientSecret) {
     throw new Error("Credenciais ML não configuradas");
@@ -38,11 +59,15 @@ export async function exchangeMercadoLivreCode(code: string) {
     client_secret: clientSecret,
     code,
     redirect_uri: redirectUri,
+    code_verifier: codeVerifier,
   });
 
   const res = await fetch(ML_TOKEN_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
     body,
   });
 
